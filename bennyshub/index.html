@@ -907,6 +907,42 @@
               <span class="pill" id="uisize-status">Default</span>
             </div>
           </button>
+
+          <button class="card-btn" id="longpress-toggle">
+            <span class="kicker">Game Default</span>
+            <div class="btn-title">Long Press Speed</div>
+            <div class="row">
+              <p class="desc">Space long-press duration for games</p>
+              <span class="pill" id="longpress-status">Normal</span>
+            </div>
+          </button>
+
+          <button class="card-btn" id="shared-theme-toggle">
+            <span class="kicker">Game Default</span>
+            <div class="btn-title">Default Theme</div>
+            <div class="row">
+              <p class="desc">Default theme for all games</p>
+              <span class="pill" id="shared-theme-status">Default</span>
+            </div>
+          </button>
+
+          <button class="card-btn" id="shared-hlcolor-toggle">
+            <span class="kicker">Game Default</span>
+            <div class="btn-title">Default Highlight Color</div>
+            <div class="row">
+              <p class="desc">Default highlight color for games</p>
+              <span class="pill" id="shared-hlcolor-status">Theme Default</span>
+            </div>
+          </button>
+
+          <button class="card-btn" id="shared-hlstyle-toggle">
+            <span class="kicker">Game Default</span>
+            <div class="btn-title">Default Highlight Style</div>
+            <div class="row">
+              <p class="desc">Default highlight style for games</p>
+              <span class="pill" id="shared-hlstyle-status">Outline</span>
+            </div>
+          </button>
         </div>
         <p class="footer-note">Press <span class="kbd">spacebar</span> to move focus. Press <span class="kbd">return</span> to toggle settings. Use the Back button to return home.</p>
       </section>
@@ -1280,6 +1316,27 @@
         stopAutoScan();
       }
 
+      // Apply Phase 2 shared settings displays
+      if (window.NarbeScanManager) {
+        const scanState = window.NarbeScanManager.getSettings();
+        const lpSpeeds = window.NarbeScanManager.getLongPressSpeeds();
+        const lpLabels = window.NarbeScanManager.getLongPressLabels();
+        const lpIndex = lpSpeeds.indexOf(scanState.longPressThreshold);
+        const lpEl = document.getElementById('longpress-status');
+        if (lpEl) lpEl.textContent = lpLabels[lpIndex >= 0 ? lpIndex : 1];
+
+        const themeNames = window.NarbeScanManager.getThemeNames();
+        const themeEl = document.getElementById('shared-theme-status');
+        if (themeEl) themeEl.textContent = themeNames[scanState.sharedThemeIndex] || 'Default';
+
+        const hlColorNames = window.NarbeScanManager.getHighlightColorNames();
+        const hlColorEl = document.getElementById('shared-hlcolor-status');
+        if (hlColorEl) hlColorEl.textContent = hlColorNames[scanState.sharedHighlightColorIndex] || 'Theme Default';
+
+        const hlStyleEl = document.getElementById('shared-hlstyle-status');
+        if (hlStyleEl) hlStyleEl.textContent = scanState.sharedHighlightStyle === 'full' ? 'Full' : 'Outline';
+      }
+
       // Apply TTS status (from voice manager)
       const voiceSettings = window.NarbeVoiceManager.getSettings();
       document.getElementById('tts-status').textContent = voiceSettings.ttsEnabled ? 'On' : 'Off';
@@ -1422,6 +1479,52 @@
       applySettings();
       saveSettings();
       speak(`Size changed to ${settings.uiSize}`);
+    });
+
+    // Phase 2 shared settings toggles
+    document.getElementById('longpress-toggle').addEventListener('click', () => {
+      if (window.NarbeScanManager) {
+        const speeds = window.NarbeScanManager.getLongPressSpeeds();
+        const labels = window.NarbeScanManager.getLongPressLabels();
+        const current = window.NarbeScanManager.getSettings().longPressThreshold;
+        const idx = speeds.indexOf(current);
+        const nextIdx = (idx + 1) % speeds.length;
+        window.NarbeScanManager.updateSettings({ longPressThreshold: speeds[nextIdx] });
+        applySettings();
+        speak(`Long press speed changed to ${labels[nextIdx]}`);
+      }
+    });
+
+    document.getElementById('shared-theme-toggle').addEventListener('click', () => {
+      if (window.NarbeScanManager) {
+        const names = window.NarbeScanManager.getThemeNames();
+        const current = window.NarbeScanManager.getSettings().sharedThemeIndex;
+        const nextIdx = (current + 1) % names.length;
+        window.NarbeScanManager.updateSettings({ sharedThemeIndex: nextIdx });
+        applySettings();
+        speak(`Default theme changed to ${names[nextIdx]}`);
+      }
+    });
+
+    document.getElementById('shared-hlcolor-toggle').addEventListener('click', () => {
+      if (window.NarbeScanManager) {
+        const names = window.NarbeScanManager.getHighlightColorNames();
+        const current = window.NarbeScanManager.getSettings().sharedHighlightColorIndex;
+        const nextIdx = (current + 1) % names.length;
+        window.NarbeScanManager.updateSettings({ sharedHighlightColorIndex: nextIdx });
+        applySettings();
+        speak(`Default highlight color changed to ${names[nextIdx]}`);
+      }
+    });
+
+    document.getElementById('shared-hlstyle-toggle').addEventListener('click', () => {
+      if (window.NarbeScanManager) {
+        const current = window.NarbeScanManager.getSettings().sharedHighlightStyle;
+        const next = current === 'outline' ? 'full' : 'outline';
+        window.NarbeScanManager.updateSettings({ sharedHighlightStyle: next });
+        applySettings();
+        speak(`Default highlight style changed to ${next === 'full' ? 'Full' : 'Outline'}`);
+      }
     });
 
     // Fullscreen management

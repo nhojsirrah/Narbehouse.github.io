@@ -12,10 +12,27 @@ window.NarbeScanManager = (function() {
   // Available scan speeds in milliseconds
   const SCAN_SPEEDS = [1000, 2000, 3000, 4000];
 
+  // Long-press speed options in milliseconds
+  const LONG_PRESS_SPEEDS = [4000, 3000, 2000];
+  const LONG_PRESS_LABELS = ['Slow', 'Normal', 'Fast'];
+
+  // Standard-8 theme catalog names
+  const THEME_NAMES = ['Default', 'Ocean', 'Midnight', 'Forest', 'Sunset', 'Lavender', 'Mint', 'Dark Blue'];
+
+  // Highlight color names
+  const HIGHLIGHT_COLOR_NAMES = ['Theme Default', 'Yellow', 'White', 'Cyan', 'Lime', 'Magenta', 'Red', 'Orange'];
+
+  // Highlight style options
+  const HIGHLIGHT_STYLES = ['outline', 'full'];
+
   // Default settings
   const DEFAULT_SETTINGS = {
     autoScan: false,   // Default per agents.md (Off for Ben games)
-    scanSpeedIndex: 1  // Default to 2000ms (index 1)
+    scanSpeedIndex: 1, // Default to 2000ms (index 1)
+    longPressThreshold: 3000,       // Global Space long-press duration
+    sharedThemeIndex: 0,            // Theme preference shared across all games
+    sharedHighlightColorIndex: 0,   // Highlight color shared across all games
+    sharedHighlightStyle: 'outline' // Highlight style shared across all games
   };
 
   // Internal state
@@ -76,7 +93,11 @@ window.NarbeScanManager = (function() {
     return {
       autoScan: settings.autoScan,
       scanSpeedIndex: settings.scanSpeedIndex,
-      scanInterval: SCAN_SPEEDS[settings.scanSpeedIndex]
+      scanInterval: SCAN_SPEEDS[settings.scanSpeedIndex],
+      longPressThreshold: settings.longPressThreshold,
+      sharedThemeIndex: settings.sharedThemeIndex,
+      sharedHighlightColorIndex: settings.sharedHighlightColorIndex,
+      sharedHighlightStyle: settings.sharedHighlightStyle
     };
   }
 
@@ -216,13 +237,39 @@ window.NarbeScanManager = (function() {
         changed = true;
       }
       
-      if (typeof newSettings.scanSpeedIndex === 'number' && 
-          newSettings.scanSpeedIndex >= 0 && 
+      if (typeof newSettings.scanSpeedIndex === 'number' &&
+          newSettings.scanSpeedIndex >= 0 &&
           newSettings.scanSpeedIndex < SCAN_SPEEDS.length) {
         settings.scanSpeedIndex = newSettings.scanSpeedIndex;
         changed = true;
       }
-      
+
+      if (typeof newSettings.longPressThreshold === 'number' &&
+          LONG_PRESS_SPEEDS.includes(newSettings.longPressThreshold)) {
+        settings.longPressThreshold = newSettings.longPressThreshold;
+        changed = true;
+      }
+
+      if (typeof newSettings.sharedThemeIndex === 'number' &&
+          newSettings.sharedThemeIndex >= 0 &&
+          newSettings.sharedThemeIndex < THEME_NAMES.length) {
+        settings.sharedThemeIndex = newSettings.sharedThemeIndex;
+        changed = true;
+      }
+
+      if (typeof newSettings.sharedHighlightColorIndex === 'number' &&
+          newSettings.sharedHighlightColorIndex >= 0 &&
+          newSettings.sharedHighlightColorIndex < HIGHLIGHT_COLOR_NAMES.length) {
+        settings.sharedHighlightColorIndex = newSettings.sharedHighlightColorIndex;
+        changed = true;
+      }
+
+      if (typeof newSettings.sharedHighlightStyle === 'string' &&
+          HIGHLIGHT_STYLES.includes(newSettings.sharedHighlightStyle)) {
+        settings.sharedHighlightStyle = newSettings.sharedHighlightStyle;
+        changed = true;
+      }
+
       if (changed) {
         saveSettings();
       }
@@ -288,6 +335,41 @@ window.NarbeScanManager = (function() {
      */
     getAvailableSpeeds: function() {
       return [...SCAN_SPEEDS];
+    },
+
+    /**
+     * Helper to get long-press speed options
+     */
+    getLongPressSpeeds: function() {
+      return [...LONG_PRESS_SPEEDS];
+    },
+
+    /**
+     * Helper to get long-press speed labels
+     */
+    getLongPressLabels: function() {
+      return [...LONG_PRESS_LABELS];
+    },
+
+    /**
+     * Helper to get theme names catalog
+     */
+    getThemeNames: function() {
+      return [...THEME_NAMES];
+    },
+
+    /**
+     * Helper to get highlight color names catalog
+     */
+    getHighlightColorNames: function() {
+      return [...HIGHLIGHT_COLOR_NAMES];
+    },
+
+    /**
+     * Helper to get highlight style options
+     */
+    getHighlightStyles: function() {
+      return [...HIGHLIGHT_STYLES];
     }
   };
 })();
