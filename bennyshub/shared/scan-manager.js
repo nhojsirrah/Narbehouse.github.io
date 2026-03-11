@@ -15,7 +15,11 @@ window.NarbeScanManager = (function() {
   // Default settings
   const DEFAULT_SETTINGS = {
     autoScan: false,   // Default per agents.md (Off for Ben games)
-    scanSpeedIndex: 1  // Default to 2000ms (index 1)
+    scanSpeedIndex: 1, // Default to 2000ms (index 1)
+    longPressThreshold: 3000,        // Global Space long-press ms (apps can override per-game)
+    sharedThemeIndex: 0,             // Theme index shared across all games
+    sharedHighlightColorIndex: 0,    // Highlight color index shared across all games
+    sharedHighlightStyle: 'outline'  // Highlight style shared across all games ('outline' or 'full')
   };
 
   // Internal state
@@ -36,6 +40,20 @@ window.NarbeScanManager = (function() {
         // Ensure index is valid
         if (settings.scanSpeedIndex < 0 || settings.scanSpeedIndex >= SCAN_SPEEDS.length) {
           settings.scanSpeedIndex = DEFAULT_SETTINGS.scanSpeedIndex;
+        }
+
+        // Validate Phase 2 fields
+        if (typeof settings.longPressThreshold !== 'number' || settings.longPressThreshold <= 0) {
+          settings.longPressThreshold = DEFAULT_SETTINGS.longPressThreshold;
+        }
+        if (typeof settings.sharedThemeIndex !== 'number' || settings.sharedThemeIndex < 0) {
+          settings.sharedThemeIndex = DEFAULT_SETTINGS.sharedThemeIndex;
+        }
+        if (typeof settings.sharedHighlightColorIndex !== 'number' || settings.sharedHighlightColorIndex < 0) {
+          settings.sharedHighlightColorIndex = DEFAULT_SETTINGS.sharedHighlightColorIndex;
+        }
+        if (settings.sharedHighlightStyle !== 'outline' && settings.sharedHighlightStyle !== 'full') {
+          settings.sharedHighlightStyle = DEFAULT_SETTINGS.sharedHighlightStyle;
         }
       }
     } catch (error) {
@@ -76,7 +94,11 @@ window.NarbeScanManager = (function() {
     return {
       autoScan: settings.autoScan,
       scanSpeedIndex: settings.scanSpeedIndex,
-      scanInterval: SCAN_SPEEDS[settings.scanSpeedIndex]
+      scanInterval: SCAN_SPEEDS[settings.scanSpeedIndex],
+      longPressThreshold: settings.longPressThreshold,
+      sharedThemeIndex: settings.sharedThemeIndex,
+      sharedHighlightColorIndex: settings.sharedHighlightColorIndex,
+      sharedHighlightStyle: settings.sharedHighlightStyle
     };
   }
 
@@ -208,21 +230,42 @@ window.NarbeScanManager = (function() {
      */
     updateSettings: function(newSettings) {
       if (!newSettings) return;
-      
+
       let changed = false;
-      
+
       if (typeof newSettings.autoScan === 'boolean') {
         settings.autoScan = newSettings.autoScan;
         changed = true;
       }
-      
-      if (typeof newSettings.scanSpeedIndex === 'number' && 
-          newSettings.scanSpeedIndex >= 0 && 
+
+      if (typeof newSettings.scanSpeedIndex === 'number' &&
+          newSettings.scanSpeedIndex >= 0 &&
           newSettings.scanSpeedIndex < SCAN_SPEEDS.length) {
         settings.scanSpeedIndex = newSettings.scanSpeedIndex;
         changed = true;
       }
-      
+
+      if (typeof newSettings.longPressThreshold === 'number' && newSettings.longPressThreshold > 0) {
+        settings.longPressThreshold = newSettings.longPressThreshold;
+        changed = true;
+      }
+
+      if (typeof newSettings.sharedThemeIndex === 'number' && newSettings.sharedThemeIndex >= 0) {
+        settings.sharedThemeIndex = newSettings.sharedThemeIndex;
+        changed = true;
+      }
+
+      if (typeof newSettings.sharedHighlightColorIndex === 'number' && newSettings.sharedHighlightColorIndex >= 0) {
+        settings.sharedHighlightColorIndex = newSettings.sharedHighlightColorIndex;
+        changed = true;
+      }
+
+      if (typeof newSettings.sharedHighlightStyle === 'string' &&
+          (newSettings.sharedHighlightStyle === 'outline' || newSettings.sharedHighlightStyle === 'full')) {
+        settings.sharedHighlightStyle = newSettings.sharedHighlightStyle;
+        changed = true;
+      }
+
       if (changed) {
         saveSettings();
       }
@@ -281,6 +324,38 @@ window.NarbeScanManager = (function() {
      */
     unsubscribe: function(callback) {
       observers = observers.filter(obs => obs !== callback);
+    },
+
+    /**
+     * Get the global Space long-press threshold in milliseconds
+     * @returns {number} Milliseconds
+     */
+    getLongPressThreshold: function() {
+      return settings.longPressThreshold;
+    },
+
+    /**
+     * Get the shared theme index
+     * @returns {number}
+     */
+    getSharedThemeIndex: function() {
+      return settings.sharedThemeIndex;
+    },
+
+    /**
+     * Get the shared highlight color index
+     * @returns {number}
+     */
+    getSharedHighlightColorIndex: function() {
+      return settings.sharedHighlightColorIndex;
+    },
+
+    /**
+     * Get the shared highlight style ('outline' or 'full')
+     * @returns {string}
+     */
+    getSharedHighlightStyle: function() {
+      return settings.sharedHighlightStyle;
     },
 
     /**
