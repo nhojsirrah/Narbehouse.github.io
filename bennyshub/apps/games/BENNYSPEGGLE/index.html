@@ -19,8 +19,6 @@
 <script src="../../../shared/voice-manager.js"></script>
 <script src="../../../shared/ios-audio-fix.js"></script>
 <script src="../../../shared/scan-manager.js"></script>
-<script src="../../../shared/switch-input.js"></script>
-<script src="../../../shared/scan-engine.js"></script>
 <script>
 const BASE_W=820, BASE_H=540;
 // Solid top HUD bar height (treat as wall)
@@ -84,21 +82,14 @@ const AudioGraph = {
   _pendingMediaEls: [],
   
   // Lazily create AudioContext on demand (must be from user gesture)
+  // Does NOT force-resume — callers should use NarBeIOSAudio.tryUnlock or AudioGraph.resume()
   getContext() {
     if (this.ac) {
-      // Always try to resume existing context
-      if (this.ac.state === 'suspended') {
-        this.ac.resume().catch(()=>{});
-      }
       return this.ac;
     }
     const AC = window.AudioContext || window.webkitAudioContext;
     if (!AC) return null;
     this.ac = new AC();
-    // Immediately try to resume (ios-audio-fix should also do this, but belt & suspenders)
-    if (this.ac.state === 'suspended') {
-      this.ac.resume().catch(()=>{});
-    }
     // Set up routing
     this.analyser = this.ac.createAnalyser();
     this.analyser.fftSize = 2048;
@@ -132,10 +123,15 @@ const AudioGraph = {
     return this;
   },
   
-  // Resume context if suspended
+  // Resume context if suspended — routes through NarBeIOSAudio.tryUnlock
+  // so we never steal the audio session from TTS
   resume(){
     if (this.ac && this.ac.state === 'suspended') {
-      this.ac.resume().catch(()=>{});
+      if (window.NarBeIOSAudio) {
+        window.NarBeIOSAudio.tryUnlock(this.ac, null);
+      } else {
+        this.ac.resume().catch(()=>{});
+      }
     }
     return Promise.resolve();
   },
@@ -625,13 +621,10 @@ const LevelCatalog = {
 class Sounder{
   constructor(){ this.ac = null; this._throttle = Object.create(null); }
   
-  // Get or create AudioContext lazily
+  // Get or create AudioContext lazily (does NOT force-resume; tryUnlock handles that)
   ctx(){
     if (!this.ac) {
       this.ac = AudioGraph.getContext();
-    }
-    if (this.ac && this.ac.state === 'suspended') {
-      this.ac.resume().catch(()=>{});
     }
     return this.ac;
   }
@@ -715,13 +708,9 @@ class Music {
   }
 
   _ensureNodes(){
-    // Get or create context lazily
+    // Get or create context lazily (does NOT force-resume; tryUnlock handles that)
     this.ac = AudioGraph.getContext();
     if(!this.ac) return false;
-    // Resume if suspended
-    if(this.ac.state === 'suspended') {
-      this.ac.resume().catch(()=>{});
-    }
     if(!this.master){
       this.master = this.ac.createGain();
       this.master.gain.value = 0.28;
@@ -1093,14 +1082,13 @@ class Game{
     document.addEventListener('keydown',(e)=>this.keyDown(e));
     document.addEventListener('keyup',(e)=>this.keyUp(e));
     document.addEventListener('pointerdown',(e)=>this.pointerDown(e));
-
-    // --- Phase 1 shared modules: SwitchInput + ScanEngine for app-level menus ---
-    this._initMenuModules();
     
-    // iOS CRITICAL: touchstart is required for audio unlock on iOS Safari
+    // iOS: lazily unlock AudioContext on touch, but only if TTS isn't speaking
     document.addEventListener('touchstart', () => {
       if (!AudioGraph.ac) AudioGraph.getContext();
-      AudioGraph.resume();
+      if (AudioGraph.ac && window.NarBeIOSAudio) {
+        window.NarBeIOSAudio.tryUnlock(AudioGraph.ac, null);
+      }
     }, { passive: true });
 
     // Frame timing (set before starting loop to avoid NaN on first frame)
@@ -1185,269 +1173,6 @@ class Game{
       } catch(e){}
   }
 
-  // --- Phase 1: SwitchInput + ScanEngine for app-level menu navigation ---
-  _initMenuModules(){
-    if(!window.NarbeSwitchInput || !window.NarbeLinearScan) return;
-    const game = this;
-
-    // Build scannables for each app-level menu state
-    this._menuScannables = {
-      mainmenu: {
-        getItems: () => {
-          const packName = LevelLoader.getCurrentPackName();
-          return [`Select Level: ${packName}`, 'Play Game', 'Load Custom Game', 'Settings', 'Exit Game'];
-        },
-        onFocus: (item, index) => {
-          game.mainMenuIndex = index;
-          TTS.speak(item);
-          game.lastMenuScan = performance.now();
-        },
-        onSelect: (item, index) => {
-          game.lastMenuScan = performance.now() + 1000;
-          game._activateMainMenu(index);
-        }
-      },
-      settings: {
-        getItems: () => {
-          const aimC = game.aimerModes[game.aimerIndex].name;
-          const scan = (game.autoScan ? 'On' : 'Off');
-          const spd = game.scanSpeeds[game.scanSpeedIndex].name;
-          const aimSpd = game.aimerSpeeds[game.aimerSpeedIndex].name;
-          const mus = (game.music.enabled?'On':'Off');
-          const tts = (TTS.enabled?'On':'Off');
-          return [
-            `Music: ${mus}`, `TTS: ${tts}`, `Aimer Color: ${aimC}`,
-            `Auto Scan: ${scan}`, `Scan Speed: ${spd}`, `Aimer Speed: ${aimSpd}`,
-            'Load Level Creator', 'Back'
-          ];
-        },
-        onFocus: (item, index) => {
-          game.settingsIndex = index;
-          TTS.speak(item);
-          game.lastMenuScan = performance.now();
-        },
-        onSelect: (item, index) => {
-          game.lastMenuScan = performance.now() + 1000;
-          game._activateSettings(index);
-        }
-      },
-      editorWarning: {
-        getItems: () => ['Cancel', 'Proceed'],
-        onFocus: (item, index) => {
-          game.warningIndex = index;
-          TTS.speak(item);
-          game.lastMenuScan = performance.now();
-        },
-        onSelect: (item, index) => {
-          game.lastMenuScan = performance.now() + 1000;
-          game._activateWarning(index);
-        }
-      },
-      loadWarning: {
-        getItems: () => ['Cancel', 'Proceed'],
-        onFocus: (item, index) => {
-          game.warningIndex = index;
-          TTS.speak(item);
-          game.lastMenuScan = performance.now();
-        },
-        onSelect: (item, index) => {
-          game.lastMenuScan = performance.now() + 1000;
-          game._activateWarning(index);
-        }
-      },
-      difficulty: {
-        getItems: () => game._difficultyItems(),
-        onFocus: (item, index) => {
-          game.difficultyIndex = index;
-          TTS.speak(item);
-          game.lastMenuScan = performance.now();
-        },
-        onSelect: (item, index) => {
-          game.lastMenuScan = performance.now() + 1000;
-          game.confirmDifficultySelection();
-        }
-      },
-      games: {
-        getItems: () => (game.gamesList || []).map(g => g.name || ''),
-        onFocus: (item, index) => {
-          game.gamesIndex = index;
-          TTS.speak(item);
-          game.lastMenuScan = performance.now();
-        },
-        onSelect: (item, index) => {
-          game.lastMenuScan = performance.now() + 1000;
-          const entry = game.gamesList[index];
-          game.selectGameEntry(entry);
-        }
-      }
-    };
-
-    // Create one NarbeLinearScan, start with mainmenu scannable
-    this._menuScan = new NarbeLinearScan(this._menuScannables.mainmenu);
-    // Sync initial index with mainMenuIndex (default 0)
-    this._menuScan.setIndex(this.mainMenuIndex);
-
-    // Create NarbeSwitchInput for app-level menus only (not in-game)
-    this._menuInput = new NarbeSwitchInput({
-      shouldHandle: () => game.appState !== 'game',
-      longPressThreshold: 3000,
-      enterLongPressThreshold: 0,  // No pause action in menus
-      repeatInterval: (game.scanSpeeds[game.scanSpeedIndex] || {}).dur || 2500,
-
-      onScanForward: () => {
-        game._menuScan.forward();
-        game.lastMenuScan = performance.now();
-      },
-      onScanBackwardStart: () => {},
-      onScanBackward: () => {
-        game._menuScan.backward();
-        game.lastMenuScan = performance.now();
-      },
-      onScanBackwardStop: () => {},
-      onSelect: () => {
-        game._menuScan.select();
-      }
-    });
-  }
-
-  // Switch the scan engine's scannable when appState changes
-  _switchMenuScannable(newState){
-    const scannable = this._menuScannables[newState];
-    if(scannable && this._menuScan){
-      this._menuScan.setScannable(scannable);
-      // Sync scan index with the game's current index for this menu
-      // so forward() increments from the correct position
-      const idxMap = {
-        mainmenu: this.mainMenuIndex,
-        settings: this.settingsIndex,
-        editorWarning: this.warningIndex,
-        loadWarning: this.warningIndex,
-        difficulty: this.difficultyIndex,
-        games: this.gamesIndex
-      };
-      const currentIdx = (idxMap[newState] !== undefined) ? idxMap[newState] : -1;
-      this._menuScan.setIndex(currentIdx);
-    }
-  }
-
-  // Extracted: main menu Enter-activation logic (previously inline in keyUp)
-  _activateMainMenu(index){
-    if(index===0){
-      LevelLoader.cyclePack().then(()=>{
-        TTS.speak('Selected ' + LevelLoader.getCurrentPackName());
-      });
-    }
-    else if(index===1){
-      if(LevelLoader.total() > 0){
-        this.pendingStartKind = 'builtin';
-        this.appState = 'difficulty';
-        this.lastMenuScan = performance.now() + 1000;
-        this._switchMenuScannable('difficulty');
-        TTS.speak('Select difficulty');
-      } else {
-        TTS.speak('No levels loaded');
-      }
-    }
-    else if(index===2){
-      this.appState = 'loadWarning';
-      this.warningPrevState = 'mainmenu';
-      this.warningIndex = -1;
-      this.lastMenuScan = performance.now() + 1000;
-      this._switchMenuScannable('loadWarning');
-      TTS.speak('Load Custom File. Cancel or Proceed?');
-    }
-    else if(index===3){
-      this.appState = 'settings';
-      this.settingsIndex = 0;
-      this.lastMenuScan = performance.now() + 1000;
-      this._switchMenuScannable('settings');
-      TTS.speak('Settings Menu');
-    }
-    else {
-      exitApp();
-    }
-  }
-
-  // Extracted: settings menu Enter-activation logic
-  _activateSettings(idx){
-    this.lastMenuScan = performance.now() + 1000;
-    if(idx===0){
-      this.music.toggle();
-      this.saveSettings();
-      TTS.speak(this.music.enabled?'Music On':'Music Off');
-    } else if(idx===1){
-      TTS.enabled = !TTS.enabled;
-      this.saveSettings();
-      TTS.speak(TTS.enabled?'TTS On':'TTS Off');
-    } else if(idx===2){
-      this.aimerIndex = (this.aimerIndex + 1) % this.aimerModes.length;
-      this.saveSettings();
-      TTS.speak('Aimer ' + this.aimerModes[this.aimerIndex].name);
-    } else if(idx===3){
-      this.autoScan = !this.autoScan;
-      this.saveSettings();
-      TTS.speak(this.autoScan ? 'Auto Scan On' : 'Auto Scan Off');
-    } else if(idx===4){
-      this.scanSpeedIndex = (this.scanSpeedIndex + 1) % this.scanSpeeds.length;
-      this.saveSettings();
-      TTS.speak('Scan Speed ' + this.scanSpeeds[this.scanSpeedIndex].name);
-      // Update SwitchInput repeat interval to match new speed
-      if(this._menuInput) this._menuInput.setThresholds({ repeatInterval: this.scanSpeeds[this.scanSpeedIndex].dur });
-    } else if(idx===5){
-      this.aimerSpeedIndex = (this.aimerSpeedIndex + 1) % this.aimerSpeeds.length;
-      this.aimSpeed = this.aimerSpeeds[this.aimerSpeedIndex].val;
-      this.saveSettings();
-      TTS.speak('Aimer Speed ' + this.aimerSpeeds[this.aimerSpeedIndex].name);
-    } else if(idx===6){
-      this.appState = 'editorWarning';
-      this.warningPrevState = 'settings';
-      this.warningIndex = -1;
-      this.lastMenuScan = performance.now() + 1000;
-      this._switchMenuScannable('editorWarning');
-      TTS.speak('Opening Level Creator. Cancel or Proceed?');
-    } else {
-      this.appState = 'mainmenu';
-      this.lastMenuScan = performance.now() + 1000;
-      this._switchMenuScannable('mainmenu');
-      TTS.speak('Main menu');
-    }
-  }
-
-  // Extracted: warning menu (editor/load) Enter-activation logic
-  _activateWarning(index){
-    this.lastMenuScan = performance.now() + 1000;
-    if(index===1){
-      // Proceed
-      if(this.appState==='editorWarning'){
-        window.open('editor.html', '_blank');
-        this.appState = this.warningPrevState;
-        this.lastMenuScan = performance.now() + 1000;
-        this._switchMenuScannable(this.warningPrevState);
-      } else {
-        // Load Custom
-        LevelLoader.pickLocal().then(ok => {
-          if(ok){
-            this.pendingStartKind = 'custom';
-            this.appState = 'difficulty';
-            this._switchMenuScannable('difficulty');
-            TTS.speak('Game loaded. Select difficulty');
-            this.lastMenuScan = performance.now() + 1000;
-          } else {
-            this.appState = 'mainmenu';
-            this._switchMenuScannable('mainmenu');
-            this.lastMenuScan = performance.now() + 1000;
-          }
-        });
-      }
-    } else if(index===0) {
-      // Cancel
-      this.appState = this.warningPrevState;
-      this._switchMenuScannable(this.warningPrevState);
-      this.lastMenuScan = performance.now() + 1000;
-      TTS.speak('Cancelled');
-    }
-  }
-
   resize(){
     const raw = window.devicePixelRatio || 1;
     // On mobile keep DPR=1; on desktop clamp to 1.5 to reduce fill-rate
@@ -1458,24 +1183,44 @@ class Game{
   }
 
   keyDown(e){
-    // Menus: allow Escape to go back (not handled by SwitchInput)
+    // Lazily unlock AudioContext on key press (defers if TTS is speaking)
+    if (AudioGraph.ac && window.NarBeIOSAudio) {
+      window.NarBeIOSAudio.tryUnlock(AudioGraph.ac, null);
+    }
+    // Menus: allow Escape to go back from Custom Games
     if(this.appState !== 'game'){
       if(e.code==='Escape' && this.appState==='games'){
         e.preventDefault();
         this.appState='mainmenu';
         this.mainMenuIndex=0;
-        this._switchMenuScannable('mainmenu');
         TTS.speak('Main menu');
       }
+      // Escape from Difficulty -> Main Menu
       if(e.code==='Escape' && this.appState==='difficulty'){
         e.preventDefault();
         this.appState='mainmenu';
         this.mainMenuIndex=0;
-        this._switchMenuScannable('mainmenu');
         TTS.speak('Main menu');
         return;
       }
-      // Space/Enter for app-level menus now handled by NarbeSwitchInput
+      // Handle Enter on keydown: only mark pressed; do not activate here
+      if(this._isEnter(e)){
+        e.preventDefault();
+        this._menuEnterDown = true;
+        return;
+      }
+      if(this._isSpace(e)){ 
+          e.preventDefault(); 
+          // Start Long Hold Logic for Back Scan
+          if(!this.backScanDelay && !this.backScanInterval && !this.backScanActive){
+             const dur = this.scanSpeeds[this.scanSpeedIndex].dur || 2500;
+             this.backScanDelay = setTimeout(()=>{
+                 this.backScanActive = true;
+                 this._stepMenu(-1);
+                 this.backScanInterval = setInterval(()=>this._stepMenu(-1), dur);
+             }, 3000); // 3 seconds hold threshold
+          }
+      }
       return;
     }
 
@@ -1519,8 +1264,140 @@ class Game{
   }
 
   keyUp(e){
-    // App-level menus: Space/Enter now handled by NarbeSwitchInput
+    // App-level menus: release-driven navigation
     if(this.appState !== 'game'){
+      if(this._isSpace(e)){
+        e.preventDefault();
+        // Clear back-scan setup
+        if(this.backScanDelay){ clearTimeout(this.backScanDelay); this.backScanDelay=null; }
+        if(this.backScanInterval){ clearInterval(this.backScanInterval); this.backScanInterval=null; }
+        
+        // Only cycle forward if back scan didn't activate
+        if(!this.backScanActive){
+           this._stepMenu(1);
+        }
+        this.backScanActive = false;
+      } else if(this._isEnter(e)){
+        // Activate on release only
+        e.preventDefault();
+        if(!this._menuEnterDown){ return; }
+        this._menuEnterDown = false;
+
+        if(this.appState==='mainmenu'){
+          this.lastMenuScan = performance.now() + 1000;
+          if(this.mainMenuIndex===0){
+            LevelLoader.cyclePack().then(()=>{
+                TTS.speak('Selected ' + LevelLoader.getCurrentPackName());
+            });
+          }
+          else if(this.mainMenuIndex===1){
+             if(LevelLoader.total() > 0){
+                this.pendingStartKind = 'builtin'; 
+                this.appState = 'difficulty';
+                // Reset scan timer
+                this.lastMenuScan = performance.now() + 1000;
+                TTS.speak('Select difficulty');
+             } else {
+                TTS.speak('No levels loaded');
+             }
+          }
+          else if(this.mainMenuIndex===2){
+             // "Load Custom Game" -> Load Warning -> File Picker
+             this.appState = 'loadWarning';
+             this.warningPrevState = 'mainmenu';
+             this.warningIndex = -1; // -1 = None selected
+             this.lastMenuScan = performance.now() + 1000; // Reset scan timer
+             TTS.speak('Load Custom File. Cancel or Proceed?');
+          }
+          else if(this.mainMenuIndex===3){
+             // Settings
+             this.appState = 'settings';
+             this.settingsIndex = 0;
+             this.lastMenuScan = performance.now() + 1000; // Reset scan timer
+             TTS.speak('Settings Menu');
+          }
+          else {
+            exitApp();
+          }
+        } else if(this.appState==='settings'){
+            // 0:Music, 1:TTS, 2:Aimer, 3:Control, 4:Speed, 5:Editor, 6:Back
+            const idx = this.settingsIndex;
+            // Pad interaction for toggles
+            this.lastMenuScan = performance.now() + 1000;
+
+            if(idx===0){
+                this.music.toggle();
+                this.saveSettings();
+                TTS.speak(this.music.enabled?'Music On':'Music Off');
+            } else if(idx===1){
+                TTS.enabled = !TTS.enabled;
+                this.saveSettings();
+                TTS.speak(TTS.enabled?'TTS On':'TTS Off');
+            } else if(idx===2){
+                this.aimerIndex = (this.aimerIndex + 1) % this.aimerModes.length;
+                this.saveSettings();
+                TTS.speak('Aimer ' + this.aimerModes[this.aimerIndex].name);
+            } else if(idx===3){
+                this.autoScan = !this.autoScan;
+                this.saveSettings();
+                TTS.speak(this.autoScan ? 'Auto Scan On' : 'Auto Scan Off');
+            } else if(idx===4){
+                this.scanSpeedIndex = (this.scanSpeedIndex + 1) % this.scanSpeeds.length;
+                this.saveSettings();
+                TTS.speak('Scan Speed ' + this.scanSpeeds[this.scanSpeedIndex].name);
+            } else if(idx===5){
+                this.aimerSpeedIndex = (this.aimerSpeedIndex + 1) % this.aimerSpeeds.length;
+                this.aimSpeed = this.aimerSpeeds[this.aimerSpeedIndex].val;
+                this.saveSettings();
+                TTS.speak('Aimer Speed ' + this.aimerSpeeds[this.aimerSpeedIndex].name);
+            } else if(idx===6){
+                 this.appState = 'editorWarning';
+                 this.warningPrevState = 'settings';
+                 this.warningIndex = -1; // -1 = None selected
+                 this.lastMenuScan = performance.now() + 1000; // Reset scan timer
+                 TTS.speak('Opening Level Creator. Cancel or Proceed?');
+            } else {
+                this.appState = 'mainmenu';
+                this.lastMenuScan = performance.now() + 1000; // Reset scan timer
+                TTS.speak('Main menu');
+            }
+        } else if(this.appState==='editorWarning' || this.appState==='loadWarning'){
+            this.lastMenuScan = performance.now() + 1000; // Reset scan timer
+            if(this.warningIndex===1){
+                // Proceed (1)
+                if(this.appState==='editorWarning'){
+                    window.open('editor.html', '_blank');
+                    this.appState = this.warningPrevState;
+                    this.lastMenuScan = performance.now() + 1000;
+                } else {
+                    // Load Custom
+                    LevelLoader.pickLocal().then(ok => {
+                        if(ok){
+                             this.pendingStartKind = 'custom';
+                             this.appState = 'difficulty'; 
+                             TTS.speak('Game loaded. Select difficulty');
+                             this.lastMenuScan = performance.now() + 1000;
+                        } else {
+                             this.appState = 'mainmenu';
+                             this.lastMenuScan = performance.now() + 1000;
+                        }
+                    });
+                }
+            } else if(this.warningIndex===0) {
+                // Cancel (0)
+                this.appState = this.warningPrevState;
+                this.lastMenuScan = performance.now() + 1000;
+                TTS.speak('Cancelled');
+            }
+        } else if(this.appState==='difficulty'){
+          this.lastMenuScan = performance.now() + 1000;
+          this.confirmDifficultySelection();
+        } else if(this.appState==='games'){
+          this.lastMenuScan = performance.now() + 1000;
+          const entry = this.gamesList[this.gamesIndex];
+          this.selectGameEntry(entry);
+        }
+      }
       return;
     }
 
@@ -1580,7 +1457,6 @@ class Game{
     // Default selection reflects current difficulty (offset by Back at index 0)
     const cur = { easy:1, medium:2, hard:3 }[this.difficulty] ?? 1;
     this.difficultyIndex = cur;
-    this._switchMenuScannable('difficulty');
     const msg = (kind==='custom') ? 'Select difficulty for custom game' : 'Select difficulty';
     TTS.speak(msg);
   }
@@ -1590,7 +1466,6 @@ class Game{
       // Back -> Main Menu
       this.appState = 'mainmenu';
       this.mainMenuIndex = 0;
-      this._switchMenuScannable('mainmenu');
       TTS.speak('Main menu');
       return;
     }
@@ -1695,25 +1570,22 @@ class Game{
 
   _autoScan() {
       if (!this.autoScan) return;
-
+      
       const now = performance.now();
       const dur = this.scanSpeeds[this.scanSpeedIndex].dur || 2500;
       if (now - (this.lastMenuScan || 0) <= dur) return;
 
       this.lastMenuScan = now;
 
-      // In-Game Pause Menu (not managed by NarbeLinearScan)
+      // In-Game Pause Menu
       if(this.menuOpen && this.appState === 'game'){
           this.menuIndex = (this.menuIndex + 1) % this._menuItems().length;
           this._speakMenuItem();
           return;
       }
 
-      // App menus: use NarbeLinearScan
-      if(this._menuScan && this.appState !== 'game'){
-          this._menuScan.forward();
-          return;
-      }
+      // App menus
+      this._stepMenu(1);
   }
 
   menuSelect(){
@@ -1751,11 +1623,13 @@ class Game{
   }
 
   pointerDown(e){
-    // iOS audio unlock: create/resume context on first interaction
+    // iOS audio unlock: lazily create/resume context, but defer if TTS is speaking
     if (!AudioGraph.ac) {
       AudioGraph.getContext();
     }
-    AudioGraph.resume();
+    if (AudioGraph.ac && window.NarBeIOSAudio) {
+      window.NarBeIOSAudio.tryUnlock(AudioGraph.ac, null);
+    }
 
     // Menus: allow mouse click selection (press only selects/focuses; release activates)
     const p = this._toGameCoords(e);
@@ -1900,11 +1774,10 @@ class Game{
             });
         }
         // 1: Play Game
-        else if(idx===1){
+        else if(idx===1){ 
             if(LevelLoader.total() > 0){
                 this.pendingStartKind = 'builtin'; // Actually just means "current pack" now
                 this.appState = 'difficulty';
-                this._switchMenuScannable('difficulty');
                 TTS.speak('Select difficulty');
             } else {
                 TTS.speak('No levels loaded');
@@ -1916,7 +1789,6 @@ class Game{
              this.warningPrevState = 'mainmenu';
              this.warningIndex = 0;
              this.lastMenuScan = performance.now(); // Reset scan timer
-             this._switchMenuScannable('loadWarning');
              TTS.speak('Load Custom File. Proceed or Cancel?');
         }
         // 3: Settings
@@ -1924,7 +1796,6 @@ class Game{
              this.appState = 'settings';
              this.settingsIndex = 0;
              this.lastMenuScan = performance.now(); // Reset scan timer
-             this._switchMenuScannable('settings');
              TTS.speak('Settings Menu');
         }
         // 4: Exit
@@ -1960,7 +1831,6 @@ class Game{
             this.scanSpeedIndex = (this.scanSpeedIndex + 1) % this.scanSpeeds.length;
             this.saveSettings();
             TTS.speak('Scan Speed ' + this.scanSpeeds[this.scanSpeedIndex].name);
-            if(this._menuInput) this._menuInput.setThresholds({ repeatInterval: this.scanSpeeds[this.scanSpeedIndex].dur });
         } else if(idx===5){
             this.aimerSpeedIndex = (this.aimerSpeedIndex + 1) % this.aimerSpeeds.length;
             this.aimSpeed = this.aimerSpeeds[this.aimerSpeedIndex].val;
@@ -1969,14 +1839,12 @@ class Game{
         } else if(idx===6){
              this.appState = 'editorWarning';
              this.warningPrevState = 'settings';
-             this.warningIndex = -1;
+             this.warningIndex = -1; 
              this.lastMenuScan = performance.now(); // Reset scan timer
-             this._switchMenuScannable('editorWarning');
              TTS.speak('Opening Level Creator. Cancel or Proceed?');
         } else {
             this.appState = 'mainmenu';
             this.lastMenuScan = performance.now(); // Reset scan timer
-            this._switchMenuScannable('mainmenu');
             TTS.speak('Main menu');
         }
       }
@@ -1994,21 +1862,18 @@ class Game{
            if(this.appState==='editorWarning'){
                window.open('editor.html', '_blank');
                this.appState = this.warningPrevState;
-               this.lastMenuScan = performance.now(); // Reset scan timer
-               this._switchMenuScannable(this.warningPrevState);
+               this.lastMenuScan = performance.now(); // Reset scan timer 
            } else {
                // Load Custom
                LevelLoader.pickLocal().then(ok => {
                     if(ok){
                          this.pendingStartKind = 'custom';
-                         this.appState = 'difficulty';
+                         this.appState = 'difficulty'; 
                          TTS.speak('Game loaded. Select difficulty');
                          this.lastMenuScan = performance.now(); // Reset scan timer
-                         this._switchMenuScannable('difficulty');
                     } else {
                          this.appState = 'mainmenu';
                          this.lastMenuScan = performance.now(); // Reset scan timer
-                         this._switchMenuScannable('mainmenu');
                     }
                });
            }
@@ -2017,7 +1882,6 @@ class Game{
            this.appState = this.warningPrevState;
            TTS.speak('Cancelled');
            this.lastMenuScan = performance.now(); // Reset scan timer
-           this._switchMenuScannable(this.warningPrevState);
         }
       }
       this._menuPointer = null;
@@ -2122,8 +1986,6 @@ class Game{
     TTS.speak('Main menu');
     // Reset game-over guard when leaving gameplay
     this._inGameOver = false;
-    // Sync scan engine to main menu
-    this._switchMenuScannable('mainmenu');
   }
 
   loadLevel(id){
@@ -3479,7 +3341,6 @@ class Game{
     }catch(_){
       this.gamesList = [{ kind:'back', name:'Back' }, { kind:'builtin', name:'Built-in campaign' }];
     }
-    this._switchMenuScannable('games');
     TTS.speak('Custom games');
   }
 
@@ -3489,7 +3350,6 @@ class Game{
     if(entry.kind==='back'){
       this.appState='mainmenu';
       this.mainMenuIndex=0;
-      this._switchMenuScannable('mainmenu');
       TTS.speak('Main menu');
       return;
     }
