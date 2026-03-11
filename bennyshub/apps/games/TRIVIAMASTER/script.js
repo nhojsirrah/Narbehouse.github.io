@@ -141,11 +141,28 @@ async function init() {
         const s = window.NarbeScanManager.getSettings();
         state.settings.autoScan = s.autoScan;
         state.settings.scanSpeed = (s.scanInterval / 1000) + 's';
-        
+
+        // Phase 2: Inherit longPressThreshold from shared settings
+        if (typeof s.longPressThreshold === 'number') {
+            state.inputState.longPressThreshold = s.longPressThreshold;
+        }
+
+        // Phase 2: Inherit shared theme as default (no per-game persistence in TriviaMaster)
+        if (typeof s.sharedThemeIndex === 'number') {
+            const clampedIndex = Math.min(s.sharedThemeIndex, THEMES.length - 1);
+            state.settings.theme = THEMES[clampedIndex];
+        }
+
         // Subscribe to changes
         window.NarbeScanManager.subscribe((settings) => {
             state.settings.autoScan = settings.autoScan;
             state.settings.scanSpeed = (settings.scanInterval / 1000) + 's';
+
+            // Phase 2: Update longPressThreshold on change
+            if (typeof settings.longPressThreshold === 'number') {
+                state.inputState.longPressThreshold = settings.longPressThreshold;
+            }
+
             updateSettingsUI();
             startScanning();
         });

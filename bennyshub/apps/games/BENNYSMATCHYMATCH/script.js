@@ -97,12 +97,46 @@ function saveSettings() {
 
 function loadSettings() {
     const saved = localStorage.getItem('matchy_settings');
-    if (saved) {
+    const hasSaved = !!saved;
+    let parsedSaved = null;
+
+    if (hasSaved) {
         try {
-            const parsed = JSON.parse(saved);
-            Object.assign(settings, parsed);
+            parsedSaved = JSON.parse(saved);
+            Object.assign(settings, parsedSaved);
         } catch (e) {
             console.error("Failed to load settings:", e);
+        }
+    }
+
+    // Phase 2: Inherit shared settings as defaults when no per-game preference saved
+    if (window.NarbeScanManager) {
+        const shared = window.NarbeScanManager.getSettings();
+
+        // Inherit longPressThreshold
+        if (typeof shared.longPressThreshold === 'number') {
+            config.longPress = shared.longPressThreshold;
+        }
+
+        // Inherit theme if no saved per-game preference
+        if (!parsedSaved || typeof parsedSaved.themeIndex === 'undefined') {
+            if (typeof shared.sharedThemeIndex === 'number') {
+                settings.themeIndex = Math.min(shared.sharedThemeIndex, themes.length - 1);
+            }
+        }
+
+        // Inherit highlight color if no saved per-game preference
+        if (!parsedSaved || typeof parsedSaved.highlightColorIndex === 'undefined') {
+            if (typeof shared.sharedHighlightColorIndex === 'number') {
+                settings.highlightColorIndex = Math.min(shared.sharedHighlightColorIndex, highlightColors.length - 1);
+            }
+        }
+
+        // Inherit highlight style if no saved per-game preference
+        if (!parsedSaved || typeof parsedSaved.highlightStyle === 'undefined') {
+            if (typeof shared.sharedHighlightStyle === 'string') {
+                settings.highlightStyle = shared.sharedHighlightStyle;
+            }
         }
     }
 }
@@ -125,11 +159,16 @@ async function init() {
     
     // Scan Manager Integration
     if (window.NarbeScanManager) {
-        window.NarbeScanManager.subscribe(() => {
-            if (window.NarbeScanManager.getSettings().autoScan) {
+        window.NarbeScanManager.subscribe((sharedSettings) => {
+            if (sharedSettings.autoScan) {
                 startAutoScan();
             } else {
                 stopAutoScan();
+            }
+
+            // Phase 2: Update longPressThreshold on change
+            if (typeof sharedSettings.longPressThreshold === 'number') {
+                config.longPress = sharedSettings.longPressThreshold;
             }
         });
         // Initial start
