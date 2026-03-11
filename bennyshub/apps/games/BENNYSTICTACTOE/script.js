@@ -158,7 +158,7 @@ function loadSettings() {
 
         if (savedSettings) {
             Object.assign(settings, savedSettings);
-            if (settings.scanSpeedIndex >= scanSpeeds.length) settings.scanSpeedIndex = 0;
+            // scanSpeedIndex is a legacy field; auto-scan speed is now managed by NarbeScanManager
         }
 
         // Phase 2: Inherit shared defaults from NarbeScanManager when no per-game preference is saved

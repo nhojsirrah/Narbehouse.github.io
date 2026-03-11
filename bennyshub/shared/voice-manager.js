@@ -338,14 +338,14 @@ window.NarbeVoiceManager = (function() {
     
     // Cancel any ongoing speech
     window.speechSynthesis.cancel();
-    
+
     const utterance = new SpeechSynthesisUtterance(String(text));
-    
+
     // Apply voice settings
     utterance.rate = options.rate || settings.rate;
     utterance.pitch = options.pitch || settings.pitch;
     utterance.volume = options.volume || settings.volume;
-    
+
     // Set voice - should be available now
     const currentVoice = getCurrentVoice();
     if (currentVoice) {
@@ -353,8 +353,11 @@ window.NarbeVoiceManager = (function() {
     } else {
       console.warn('NarbeVoiceManager: No voice available, using default');
     }
-    
-    window.speechSynthesis.speak(utterance);
+
+    // Chrome bug workaround: calling speak() immediately after cancel() in the same
+    // synchronous frame can cause the utterance to be silently dropped. A 0ms timeout
+    // allows the engine to finish canceling before accepting the new utterance.
+    setTimeout(() => window.speechSynthesis.speak(utterance), 0);
   }
 
   /**
