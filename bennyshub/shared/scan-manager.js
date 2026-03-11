@@ -12,6 +12,19 @@ window.NarbeScanManager = (function() {
   // Available scan speeds in milliseconds
   const SCAN_SPEEDS = [1000, 2000, 3000, 4000];
 
+  // Long-press speed options in milliseconds
+  const LONG_PRESS_SPEEDS = [4000, 3000, 2000];
+  const LONG_PRESS_LABELS = ['Slow', 'Normal', 'Fast'];
+
+  // Standard-8 theme catalog names
+  const THEME_NAMES = ['Default', 'Ocean', 'Midnight', 'Forest', 'Sunset', 'Lavender', 'Mint', 'Dark Blue'];
+
+  // Highlight color names
+  const HIGHLIGHT_COLOR_NAMES = ['Theme Default', 'Yellow', 'White', 'Cyan', 'Lime', 'Magenta', 'Red', 'Orange'];
+
+  // Highlight style options
+  const HIGHLIGHT_STYLES = ['outline', 'full'];
+
   // Default settings
   const DEFAULT_SETTINGS = {
     autoScan: false,   // Default per agents.md (Off for Ben games)
@@ -250,7 +263,8 @@ window.NarbeScanManager = (function() {
         changed = true;
       }
 
-      if (typeof newSettings.sharedThemeIndex === 'number' && newSettings.sharedThemeIndex >= 0) {
+      if (typeof newSettings.sharedThemeIndex === 'number' &&
+          newSettings.sharedThemeIndex >= 0) {
         settings.sharedThemeIndex = newSettings.sharedThemeIndex;
         changed = true;
       }
@@ -363,6 +377,41 @@ window.NarbeScanManager = (function() {
      */
     getAvailableSpeeds: function() {
       return [...SCAN_SPEEDS];
+    },
+
+    /**
+     * Helper to get long-press speed options
+     */
+    getLongPressSpeeds: function() {
+      return [...LONG_PRESS_SPEEDS];
+    },
+
+    /**
+     * Helper to get long-press speed labels
+     */
+    getLongPressLabels: function() {
+      return [...LONG_PRESS_LABELS];
+    },
+
+    /**
+     * Helper to get theme names catalog
+     */
+    getThemeNames: function() {
+      return [...THEME_NAMES];
+    },
+
+    /**
+     * Helper to get highlight color names catalog
+     */
+    getHighlightColorNames: function() {
+      return [...HIGHLIGHT_COLOR_NAMES];
+    },
+
+    /**
+     * Helper to get highlight style options
+     */
+    getHighlightStyles: function() {
+      return [...HIGHLIGHT_STYLES];
     }
   };
 })();
