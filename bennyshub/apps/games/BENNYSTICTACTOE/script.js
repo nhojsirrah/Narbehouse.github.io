@@ -81,15 +81,35 @@ const settings = {
 
 // --- Initialization ---
 
+// Phase 2: Track whether user has locally overridden shared settings
+let _hasLocalTheme = false;
+let _hasLocalHighlightColor = false;
+let _hasLocalHighlightStyle = false;
+
 function init() {
+    // Phase 2: Detect local overrides before loadSettings merges them
+    try {
+        const saved = localStorage.getItem('tictactoe_settings');
+        if (saved) {
+            const parsed = JSON.parse(saved);
+            _hasLocalTheme = parsed.themeIndex !== undefined;
+            _hasLocalHighlightColor = parsed.highlightColorIndex !== undefined;
+            _hasLocalHighlightStyle = parsed.highlightStyle !== undefined;
+        }
+    } catch(e) { /* ignore */ }
+
     loadSettings();
     applyTheme();
     setupInput();
     createDOMStructure();
-    
+
     // Scan Manager Integration
     if (window.NarbeScanManager) {
-        window.NarbeScanManager.subscribe(() => {
+        // Phase 2: Set initial long-press threshold from shared settings
+        // TicTacToe keeps enterLongPress: 6000 as game-specific override
+        config.longPress = window.NarbeScanManager.getSettings().longPressThreshold || config.longPress;
+
+        window.NarbeScanManager.subscribe((scanState) => {
              // If currently active and auto scan is on, restart it to pick up new speed
              if (window.NarbeScanManager.getSettings().autoScan) {
                  startAutoScan();
@@ -99,8 +119,29 @@ function init() {
              // Refresh definition of current menu item if it displays speed/status
              if(state.mode === 'menu' && state.menuState === 'settings') refreshMenu();
              if(state.mode === 'pause' && state.pauseMenuState === 'settings') refreshPauseMenu();
+
+             // Phase 2: Inherit shared long-press threshold (enterLongPress stays game-specific at 6000)
+             config.longPress = scanState.longPressThreshold || config.longPress;
+
+             // Phase 2: Inherit shared theme if not locally overridden
+             if (!_hasLocalTheme && scanState.sharedThemeIndex !== undefined) {
+                 settings.themeIndex = scanState.sharedThemeIndex;
+                 applyTheme();
+             }
+
+             // Phase 2: Inherit shared highlight color if not locally overridden
+             if (!_hasLocalHighlightColor && scanState.sharedHighlightColorIndex !== undefined) {
+                 settings.highlightColorIndex = scanState.sharedHighlightColorIndex;
+                 updateHighlights();
+             }
+
+             // Phase 2: Inherit shared highlight style if not locally overridden
+             if (!_hasLocalHighlightStyle && scanState.sharedHighlightStyle !== undefined) {
+                 settings.highlightStyle = scanState.sharedHighlightStyle;
+                 updateHighlights();
+             }
         });
-        
+
         // Initial check
         if (!window.NarbeScanManager.getSettings().autoScan) {
             stopAutoScan();
@@ -113,10 +154,25 @@ function init() {
 function loadSettings() {
     try {
         const saved = localStorage.getItem('tictactoe_settings');
-        if (saved) {
-            Object.assign(settings, JSON.parse(saved));
+        const savedSettings = saved ? JSON.parse(saved) : null;
+
+        if (savedSettings) {
+            Object.assign(settings, savedSettings);
             if (settings.scanSpeedIndex >= scanSpeeds.length) settings.scanSpeedIndex = 0;
         }
+
+        // Phase 2: Inherit shared defaults from NarbeScanManager when no per-game preference is saved
+        const scanSettings = window.NarbeScanManager ? window.NarbeScanManager.getSettings() : {};
+        if (!savedSettings || savedSettings.themeIndex === undefined) {
+            settings.themeIndex = scanSettings.sharedThemeIndex || 0;
+        }
+        if (!savedSettings || savedSettings.highlightColorIndex === undefined) {
+            settings.highlightColorIndex = scanSettings.sharedHighlightColorIndex || 0;
+        }
+        if (!savedSettings || savedSettings.highlightStyle === undefined) {
+            settings.highlightStyle = scanSettings.sharedHighlightStyle || 'outline';
+        }
+
         const savedStats = localStorage.getItem('tictactoe_stats');
         if (savedStats) {
             Object.assign(gameStats, JSON.parse(savedStats));
@@ -443,6 +499,7 @@ function showGameOver(result) {
 
 function cycleTheme(dir, isPause = false) {
     settings.themeIndex = (settings.themeIndex + dir + themes.length) % themes.length;
+    _hasLocalTheme = true; // Phase 2: Mark as locally overridden
     applyTheme();
     saveSettings();
     isPause ? refreshPauseMenu() : refreshMenu();
@@ -476,6 +533,7 @@ function cycleScanSpeed(dir, isPause = false) {
 
 function toggleHighlightStyle(isPause = false) {
     settings.highlightStyle = settings.highlightStyle === 'outline' ? 'full' : 'outline';
+    _hasLocalHighlightStyle = true; // Phase 2: Mark as locally overridden
     saveSettings();
     updateHighlights();
     isPause ? refreshPauseMenu() : refreshMenu();
@@ -483,6 +541,7 @@ function toggleHighlightStyle(isPause = false) {
 
 function cycleHighlightColor(dir, isPause = false) {
     settings.highlightColorIndex = (settings.highlightColorIndex + dir + highlightColors.length) % highlightColors.length;
+    _hasLocalHighlightColor = true; // Phase 2: Mark as locally overridden
     saveSettings();
     updateHighlights();
     isPause ? refreshPauseMenu() : refreshMenu();

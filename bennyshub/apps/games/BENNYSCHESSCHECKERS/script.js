@@ -155,16 +155,62 @@ function init() {
     applyTheme();
     setupInput();
     createDOMStructure();
+
+    // Phase 2: Scan Manager Integration for shared settings inheritance
+    if (window.NarbeScanManager) {
+        // Set initial long-press threshold from shared settings
+        // ChessCheckers keeps enterLongPress: 5000 as game-specific override
+        config.longPress = window.NarbeScanManager.getSettings().longPressThreshold || config.longPress;
+
+        window.NarbeScanManager.subscribe((scanState) => {
+            // Phase 2: Inherit shared long-press threshold (enterLongPress stays game-specific at 5000)
+            config.longPress = scanState.longPressThreshold || config.longPress;
+
+            // Phase 2: Inherit shared theme if not locally overridden
+            if (!_hasLocalTheme && scanState.sharedThemeIndex !== undefined) {
+                settings.themeIndex = scanState.sharedThemeIndex;
+                applyTheme();
+            }
+
+            // Phase 2: Inherit shared highlight color if not locally overridden
+            if (!_hasLocalHighlightColor && scanState.sharedHighlightColorIndex !== undefined) {
+                settings.highlightColorIndex = scanState.sharedHighlightColorIndex;
+            }
+
+            // Phase 2: Inherit shared highlight style if not locally overridden
+            if (!_hasLocalHighlightStyle && scanState.sharedHighlightStyle !== undefined) {
+                settings.highlightStyle = scanState.sharedHighlightStyle;
+            }
+
+            // Refresh menus if currently in settings view
+            refreshCurrentMenu();
+
+            // Handle auto-scan changes
+            resetAutoScan();
+        });
+    }
+
     showMainMenu();
 }
+
+// Phase 2: Track whether user has locally overridden shared settings
+let _hasLocalTheme = false;
+let _hasLocalHighlightColor = false;
+let _hasLocalHighlightStyle = false;
 
 function loadSettings() {
     try {
         const saved = localStorage.getItem('bennys_checkers_settings');
-        if (saved) {
-            const parsed = JSON.parse(saved);
+        const parsed = saved ? JSON.parse(saved) : null;
+
+        if (parsed) {
+            // Phase 2: Detect local overrides before merging
+            _hasLocalTheme = parsed.themeIndex !== undefined;
+            _hasLocalHighlightColor = parsed.highlightColorIndex !== undefined;
+            _hasLocalHighlightStyle = parsed.highlightStyle !== undefined;
+
             Object.assign(settings, parsed);
-            
+
             // Validate indices safely
             const check = (key, max, def) => {
                 if (typeof settings[key] !== 'number' || settings[key] < 0 || settings[key] >= max) {
@@ -177,7 +223,7 @@ function loadSettings() {
             check('p2ColorIndex', playerColors.length, 1);
             check('highlightColorIndex', highlightColors.length, 0);
             check('scanSpeedIndex', config.scanSpeeds.length, 1);
-            
+
             if (settings.highlightStyle !== 'outline' && settings.highlightStyle !== 'full') {
                 settings.highlightStyle = 'outline';
             }
@@ -185,7 +231,19 @@ function loadSettings() {
             // First run, save defaults
             saveSettings();
         }
-    } catch(e) { 
+
+        // Phase 2: Inherit shared defaults from NarbeScanManager when no per-game preference is saved
+        const scanSettings = window.NarbeScanManager ? window.NarbeScanManager.getSettings() : {};
+        if (!_hasLocalTheme) {
+            settings.themeIndex = scanSettings.sharedThemeIndex || 0;
+        }
+        if (!_hasLocalHighlightColor) {
+            settings.highlightColorIndex = scanSettings.sharedHighlightColorIndex || 0;
+        }
+        if (!_hasLocalHighlightStyle) {
+            settings.highlightStyle = scanSettings.sharedHighlightStyle || 'outline';
+        }
+    } catch(e) {
         console.error("Error loading settings:", e);
         // Fallback to safe defaults if JSON parse fails
         saveSettings();
@@ -493,6 +551,9 @@ function toggleSetting(key) {
 
 function cycleSetting(key, dir, max) {
     settings[key] = (settings[key] + dir + max) % max;
+    // Phase 2: Mark as locally overridden
+    if (key === 'themeIndex') _hasLocalTheme = true;
+    if (key === 'highlightColorIndex') _hasLocalHighlightColor = true;
     saveSettings();
     if (key === 'themeIndex') applyTheme();
     refreshCurrentMenu();
@@ -527,11 +588,7 @@ function refreshCurrentMenu() {
 
 function toggleHighlightStyle() {
     settings.highlightStyle = settings.highlightStyle === 'outline' ? 'full' : 'outline';
-    saveSettings();
-    refreshCurrentMenu();
-}
-function toggleHighlightStyle() {
-    settings.highlightStyle = settings.highlightStyle === 'outline' ? 'full' : 'outline';
+    _hasLocalHighlightStyle = true; // Phase 2: Mark as locally overridden
     saveSettings();
     refreshCurrentMenu();
     updateGameHighlights(); // Force update in case board is underneath overlay
