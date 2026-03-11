@@ -22,7 +22,9 @@
   <!-- Fix iOS Audio not playing -->
   <script src="../../../shared/ios-audio-fix.js"></script>
   <script src="../../../shared/scan-manager.js"></script>
-  
+  <script src="../../../shared/switch-input.js"></script>
+  <script src="../../../shared/scan-engine.js"></script>
+
   <script>
   // ====== Constants ======
   const BACK_HOLD_THRESHOLD = 3000;   // ms to engage back-scan
@@ -187,21 +189,23 @@
   let settingsHighlight = -1;
   let isAudioActive = true;
 
-  // timers/flags
-  let spaceIsDown = false;
-  let spaceDownAt = 0;
+  // timers/flags — spaceIsDown/backScan state now managed by NarbeSwitchInput
+  // Kept for reference; cancelBackScanIfAny retained for showSequence guard.
   let backScanTimer = null;
   let backScanInterval = null;
   let isBackScanActive = false;
-  let lastForwardStepAt = 0;
-  let lastReturnAt = 0;
 
-  // Auto Scan Logic
+  // Auto Scan Logic — menu phases use NarbeLinearScan auto-scan,
+  // PLAYER phase keeps its own auto-scan (gameplay scanning).
   let autoScanTimer = null;
 
   function startAutoScan() {
     stopAutoScan();
-    // Only run if NarbeScanManager says autoScan is on
+    if (phase === Phase.MAIN || phase === Phase.DIFFICULTY || phase === Phase.SETTINGS) {
+      menuScan.startAutoScan();
+      return;
+    }
+    // PLAYER phase auto-scan (gameplay)
     if (window.NarbeScanManager && window.NarbeScanManager.getSettings().autoScan) {
        const scanSpeed = window.NarbeScanManager.getScanInterval();
        autoScanTimer = setInterval(() => { stepForward(); }, scanSpeed);
@@ -209,9 +213,71 @@
   }
 
   function stopAutoScan() {
+    menuScan && menuScan.stopAutoScan();
     if (autoScanTimer) {
       clearInterval(autoScanTimer);
       autoScanTimer = null;
+    }
+  }
+
+  // ====== Menu Scan Engine (NarbeLinearScan) ======
+  // A single scan engine with a dynamic scannable that routes based on current phase.
+  const menuScan = new NarbeLinearScan({
+    getItems: () => {
+      if (phase === Phase.MAIN) return MAIN_MENU_ITEMS;
+      if (phase === Phase.DIFFICULTY) return DIFFICULTY_ITEMS;
+      if (phase === Phase.SETTINGS) return settingsItems;
+      return [];
+    },
+    onFocus: (item, index) => {
+      if (phase === Phase.MAIN) { mainHighlight = index; speak(item); }
+      else if (phase === Phase.DIFFICULTY) { diffHighlight = index; speak(item); }
+      else if (phase === Phase.SETTINGS) { settingsHighlight = index; speak(item); }
+    },
+    onSelect: (item, index) => {
+      if (phase === Phase.MAIN) handleMainSelect(index);
+      else if (phase === Phase.DIFFICULTY) handleDifficultySelect(index);
+      else if (phase === Phase.SETTINGS) handleSettingsAction();
+    }
+  });
+
+  // Menu select handlers extracted for use by both scan engine and mouse/touch
+  function handleMainSelect(idx) {
+    if (idx < 0 || idx >= MAIN_MENU_ITEMS.length) return;
+    const sel = MAIN_MENU_ITEMS[idx];
+    if (sel === 'Play Game') {
+      beep(0, 60);
+      phase = Phase.DIFFICULTY;
+      diffHighlight = -1;
+      menuScan.setIndex(-1);
+      speak('Select Difficulty');
+      startAutoScan();
+    } else if (sel === 'Settings') {
+      phase = Phase.SETTINGS;
+      settingsHighlight = 0;
+      updateSettingsItems();
+      menuScan.setIndex(0);
+      speak('Settings');
+      speak(settingsItems[0]);
+      startAutoScan();
+    } else if (sel === 'Exit Game') {
+      exitApp();
+    }
+  }
+
+  function handleDifficultySelect(idx) {
+    if (idx < 0 || idx >= DIFFICULTY_ITEMS.length) return;
+    const sel = DIFFICULTY_ITEMS[idx];
+    if (sel === 'Back') {
+      phase = Phase.MAIN;
+      mainHighlight = 0;
+      menuScan.setIndex(0);
+      speak('Main Menu');
+      startAutoScan();
+    } else {
+      speak('Round 1');
+      colorCount = sel === 'Easy' ? 2 : (sel === 'Medium' ? 3 : 4);
+      startNewGame();
     }
   }
 
@@ -376,6 +442,7 @@
     setTimeout(() => {
       phase = Phase.MAIN;
       mainHighlight = -1; // No highlight until spacebar is pressed
+      menuScan.setIndex(-1);
       flashingIndex = -1;
       startAutoScan();
     }, 1500);
@@ -426,6 +493,7 @@
       // Back
       phase = Phase.MAIN;
       mainHighlight = 1; // Defaults back to Settings
+      menuScan.setIndex(1);
       startAutoScan();
     }
     updateSettingsItems();
@@ -440,111 +508,68 @@
     }
   }
 
-  window.addEventListener('keydown', async (e) => {
-    if (e.code === 'Space') e.preventDefault();
-    if (e.repeat) return;
-    
-    // Stop auto-scan on user input
-    stopAutoScan();
-    
-    // Initialize and resume audio on first user interaction
-    await unlockAudio();
-    
-    if (e.code === 'Space') {
-      if (!(phase === Phase.PLAYER || phase === Phase.MAIN || phase === Phase.DIFFICULTY || phase === Phase.SETTINGS)) return;
-      if (!spaceIsDown) {
-        spaceIsDown = true;
-        spaceDownAt = performance.now();
-        cancelBackScanIfAny();
-        if (backScanTimer) clearTimeout(backScanTimer);
-        backScanTimer = setTimeout(() => {
-          if (spaceIsDown && (performance.now() - spaceDownAt >= BACK_HOLD_THRESHOLD)) {
-            isBackScanActive = true;
-            const interval = window.NarbeScanManager ? window.NarbeScanManager.getScanInterval() : 1500;
-            backScanInterval = setInterval(() => { stepBackward(); }, interval);
-          }
-        }, BACK_HOLD_THRESHOLD);
-      }
-    }
+  // ====== NarbeSwitchInput — replaces manual keydown/keyup ======
+  // Stop auto-scan on any user input (preserves original keydown behavior)
+  document.addEventListener('keydown', (e) => {
+    if (e.code === 'Space' || e.code === 'Enter') stopAutoScan();
   });
+  // Unlock audio on any user key interaction (preserves iOS audio behavior)
+  document.addEventListener('keydown', (e) => { unlockAudio(); }, { once: true });
+  document.addEventListener('click', (e) => { unlockAudio(); }, { once: true });
 
-  window.addEventListener('keyup', (e) => {
-    if (e.code === 'Space') {
-      e.preventDefault();
-      if (!(phase === Phase.PLAYER || phase === Phase.MAIN || phase === Phase.DIFFICULTY || phase === Phase.SETTINGS)) { cancelBackScanIfAny(); return; }
-      if (isBackScanActive) {
-        cancelBackScanIfAny();
-      } else {
-        const now = performance.now();
-        if (now - lastForwardStepAt >= FORWARD_DEBOUNCE) {
-          stepForward();
-          lastForwardStepAt = now;
-        }
-      }
-      spaceIsDown = false;
-      spaceDownAt = 0;
-    }
+  const switchInput = new NarbeSwitchInput({
+    longPressThreshold: BACK_HOLD_THRESHOLD,    // 3000ms
+    enterLongPressThreshold: 0,                  // BennySays has no Enter long-press
+    repeatInterval: window.NarbeScanManager ? window.NarbeScanManager.getScanInterval() : 1500,
 
-    if (e.code === 'Enter') {
-      const now = performance.now();
-      if (now - lastReturnAt < RETURN_DEBOUNCE) return;
-      lastReturnAt = now;
+    shouldHandle: (e) => {
+      // Only handle in scannable phases (same gate as original keydown)
+      return (phase === Phase.PLAYER || phase === Phase.MAIN ||
+              phase === Phase.DIFFICULTY || phase === Phase.SETTINGS);
+    },
 
-      if (phase === Phase.MAIN) {
-        if (mainHighlight >= 0 && mainHighlight < MAIN_MENU_ITEMS.length) {
-          const sel = MAIN_MENU_ITEMS[mainHighlight];
-          if (sel === 'Play Game') {
-             // iOS Audio Unlock Intent
-             beep(0, 60);
-             
-             phase = Phase.DIFFICULTY;
-             diffHighlight = -1;
-             speak('Select Difficulty');
-             startAutoScan();
-          } else if (sel === 'Settings') {
-             phase = Phase.SETTINGS;
-             settingsHighlight = 0;
-             updateSettingsItems();
-             speak('Settings');
-             speak(settingsItems[0]);
-             startAutoScan();
-          } else if (sel === 'Exit Game') {
-             exitApp();
-          }
-        }
-        return;
-      }
-
-      if (phase === Phase.DIFFICULTY) {
-        if (diffHighlight >= 0 && diffHighlight < DIFFICULTY_ITEMS.length) {
-          const sel = DIFFICULTY_ITEMS[diffHighlight];
-          if (sel === 'Back') {
-             phase = Phase.MAIN;
-             mainHighlight = 0;
-             speak('Main Menu');
-             startAutoScan();
-          } else {
-             // Speak Round 1 immediately in the user gesture before any delays
-             speak('Round 1');
-             colorCount = sel === 'Easy' ? 2 : (sel === 'Medium' ? 3 : 4);
-             startNewGame();
-          }
-        }
-        return;
-      }
-
-      if (phase === Phase.SETTINGS) {
-         if (settingsHighlight >= 0) handleSettingsAction();
-         return;
-      }
-
-      if (phase === Phase.SHOWING) return;
-      if (phase === Phase.GAMEOVER) return;
-
+    onScanForward: () => {
       if (phase === Phase.PLAYER) {
+        // Gameplay scanning — manual (preserve existing behavior)
+        stepForward();
+      } else {
+        // Menu scanning — use scan engine
+        menuScan.forward();
+      }
+      startAutoScan();
+    },
+
+    onScanBackwardStart: () => {
+      // Auto-scan already stopped by keydown listener
+    },
+
+    onScanBackward: () => {
+      if (phase === Phase.PLAYER) {
+        stepBackward();
+      } else {
+        menuScan.backward();
+      }
+    },
+
+    onScanBackwardStop: () => {
+      startAutoScan();
+    },
+
+    onSelect: () => {
+      // Auto-scan already stopped by keydown listener
+      if (phase === Phase.MAIN) {
+        if (mainHighlight >= 0) handleMainSelect(mainHighlight);
+      } else if (phase === Phase.DIFFICULTY) {
+        if (diffHighlight >= 0) handleDifficultySelect(diffHighlight);
+      } else if (phase === Phase.SETTINGS) {
+        if (settingsHighlight >= 0) handleSettingsAction();
+      } else if (phase === Phase.PLAYER) {
         if (highlightIndex >= 0 && highlightIndex < colorCount) handlePlayerPick(highlightIndex);
       }
-    }
+    },
+
+    onPause: () => {},     // No pause in BennySays
+    onSelectPrev: () => {} // No selectPrev in BennySays
   });
 
   // Mouse input
@@ -565,19 +590,19 @@
       for (let i = 0; i < menuBounds.length; i++) {
         const b = menuBounds[i];
         if (x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h) {
+          // Mouse click on main menu — note: original mouse handler skipped beep for iOS
           const sel = MAIN_MENU_ITEMS[i];
           if (sel === 'Play Game') {
-             // iOS Audio Unlock Intent - SKIP beep to avoid TTS conflict
-             // beep(0, 60);
-             
              phase = Phase.DIFFICULTY;
              diffHighlight = -1;
+             menuScan.setIndex(-1);
              speak('Select Difficulty');
              startAutoScan();
           } else if (sel === 'Settings') {
              phase = Phase.SETTINGS;
              settingsHighlight = 0;
              updateSettingsItems();
+             menuScan.setIndex(0);
              speak('Settings');
              speak(settingsItems[0]);
              startAutoScan();
@@ -595,10 +620,10 @@
            if (sel === 'Back') {
              phase = Phase.MAIN;
              mainHighlight = 0;
+             menuScan.setIndex(0);
              speak('Main Menu');
              startAutoScan();
            } else {
-             // Speak Round 1 immediately in the user gesture before any delays
              speak('Round 1');
              colorCount = sel === 'Easy' ? 2 : (sel === 'Medium' ? 3 : 4);
              startNewGame();
@@ -651,17 +676,16 @@
         if (x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h) {
           const sel = MAIN_MENU_ITEMS[i];
           if (sel === 'Play Game') {
-             // iOS Audio Unlock Intent - SKIP beep to avoid TTS conflict
-             // beep(0, 60);
-             
              phase = Phase.DIFFICULTY;
              diffHighlight = -1;
+             menuScan.setIndex(-1);
              speak('Select Difficulty');
              startAutoScan();
           } else if (sel === 'Settings') {
              phase = Phase.SETTINGS;
              settingsHighlight = 0;
              updateSettingsItems();
+             menuScan.setIndex(0);
              speak('Settings');
              speak(settingsItems[0]);
           } else if (sel === 'Exit Game') {
@@ -678,10 +702,10 @@
           if (sel === 'Back') {
              phase = Phase.MAIN;
              mainHighlight = 0;
+             menuScan.setIndex(0);
              speak('Main Menu');
              startAutoScan();
           } else {
-             // Speak Round 1 immediately in the user gesture before any delays
              speak('Round 1');
              colorCount = sel === 'Easy' ? 2 : (sel === 'Medium' ? 3 : 4);
              startNewGame();
@@ -716,6 +740,8 @@
     isBackScanActive = false;
   }
 
+  // stepForward/stepBackward now only handle PLAYER phase gameplay scanning.
+  // Menu scanning (MAIN, DIFFICULTY, SETTINGS) is handled by NarbeLinearScan (menuScan).
   function stepForward() {
     if (phase === Phase.PLAYER) {
       if (highlightIndex === -1) {
@@ -723,23 +749,6 @@
       } else {
         highlightIndex = (highlightIndex + 1) % colorCount;
       }
-    } else if (phase === Phase.MAIN) {
-      if (mainHighlight === -1) {
-         mainHighlight = 0;
-      } else {
-         mainHighlight = (mainHighlight + 1) % MAIN_MENU_ITEMS.length;
-      }
-      speak(MAIN_MENU_ITEMS[mainHighlight]);
-    } else if (phase === Phase.DIFFICULTY) {
-      if (diffHighlight === -1) {
-        diffHighlight = 0;
-      } else {
-        diffHighlight = (diffHighlight + 1) % DIFFICULTY_ITEMS.length;
-      }
-      speak(DIFFICULTY_ITEMS[diffHighlight]);
-    } else if (phase === Phase.SETTINGS) {
-      settingsHighlight = (settingsHighlight + 1) % settingsItems.length;
-      speak(settingsItems[settingsHighlight]);
     }
   }
 
@@ -752,23 +761,6 @@
       } else {
         highlightIndex = (highlightIndex - 1 + colorCount) % colorCount;
       }
-    } else if (phase === Phase.MAIN) {
-      if (mainHighlight === -1) {
-          mainHighlight = MAIN_MENU_ITEMS.length - 1;
-      } else {
-          mainHighlight = (mainHighlight - 1 + MAIN_MENU_ITEMS.length) % MAIN_MENU_ITEMS.length;
-      }
-      speak(MAIN_MENU_ITEMS[mainHighlight]);
-    } else if (phase === Phase.DIFFICULTY) {
-      if (diffHighlight === -1) {
-         diffHighlight = DIFFICULTY_ITEMS.length - 1;
-      } else {
-         diffHighlight = (diffHighlight - 1 + DIFFICULTY_ITEMS.length) % DIFFICULTY_ITEMS.length;
-      }
-      speak(DIFFICULTY_ITEMS[diffHighlight]);
-    } else if (phase === Phase.SETTINGS) {
-      settingsHighlight = (settingsHighlight - 1 + settingsItems.length) % settingsItems.length;
-      speak(settingsItems[settingsHighlight]);
     }
   }
 
@@ -1008,9 +1000,11 @@
       if (window.NarbeScanManager.getSettings().autoScan) {
         startAutoScan();
       }
-      // Listen for changes
+      // Listen for changes — sync scan speed to switch input repeat interval
       window.NarbeScanManager.subscribe((s) => {
          updateSettingsItems();
+         // Keep NarbeSwitchInput repeat interval in sync with scan speed
+         switchInput.setThresholds({ repeatInterval: s.scanInterval });
          if (s.autoScan) {
              startAutoScan();
          } else {
