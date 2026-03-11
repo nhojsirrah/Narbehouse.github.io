@@ -78,6 +78,26 @@ class MenuSystem {
             ]
         };
 
+        // Create NarbeLinearScan for menu navigation (Phase 1 shared module)
+        this._scannable = {
+            getItems: () => this.items,
+            onFocus: (item, index) => {
+                this.selectedIndex = index;
+                this.render();
+                // Announce selection via TTS
+                let text = typeof item.text === 'function' ? item.text() : item.text;
+                text = text.replace(/<[^>]*>/g, ''); // Strip HTML tags
+                AudioSys.speak(text);
+            },
+            onSelect: (item, index) => {
+                this.selectItem();
+            },
+            skip: (item, index) => {
+                return item.selectable === false;
+            }
+        };
+        this._scan = new NarbeLinearScan(this._scannable);
+
         this.setupInput();
         this.showMainMenu();
 
@@ -89,6 +109,7 @@ class MenuSystem {
                 const index = items.indexOf(e.target);
                 if (index !== -1) {
                     this.selectedIndex = index;
+                    this._scan.setIndex(index);
                     this.selectItem();
                 }
             }
@@ -101,7 +122,8 @@ class MenuSystem {
                 const index = items.indexOf(e.target);
                 if (index !== -1 && index !== this.selectedIndex) {
                     this.selectedIndex = index;
-                    this.render(); 
+                    this._scan.setIndex(index);
+                    this.render();
                 }
              }
         });
@@ -116,41 +138,14 @@ class MenuSystem {
         if (!this.active) return;
 
         // Reset auto scan on any input
-        if (this.autoScanTimer) this.updateAutoScan();
+        this._scan.resetAutoScan();
 
         if (event === 'SCAN_NEXT') {
-            this.moveSelection(1);
+            this._scan.forward();
         } else if (event === 'SCAN_PREV') {
-            this.moveSelection(-1);
+            this._scan.backward();
         } else if (event === 'SELECT') {
-            this.selectItem();
-        }
-    }
-
-    moveSelection(dir) {
-        let nextIndex = this.selectedIndex;
-        let count = 0;
-        
-        // Find next selectable item
-        do {
-            nextIndex += dir;
-            if (nextIndex < 0) nextIndex = this.items.length - 1;
-            if (nextIndex >= this.items.length) nextIndex = 0;
-            count++;
-        } while (this.items[nextIndex].selectable === false && count < this.items.length);
-
-        if (count < this.items.length) {
-            this.selectedIndex = nextIndex;
-            this.render();
-            
-            // Announce selection via TTS
-            const item = this.items[this.selectedIndex];
-            let text = typeof item.text === 'function' ? item.text() : item.text;
-            
-            // Strip HTML tags for TTS
-            text = text.replace(/<[^>]*>/g, '');
-            
-            AudioSys.speak(text);
+            this._scan.select();
         }
     }
 
@@ -163,6 +158,7 @@ class MenuSystem {
         this.state = 'MAIN_MENU';
         this.items = this.menus['MAIN_MENU'];
         this.selectedIndex = 0;
+        this._scan.setIndex(0);
         this.render();
         AudioSys.speak("Benny's Mini Golf");
     }
@@ -171,6 +167,7 @@ class MenuSystem {
         this.state = 'PAUSE_MENU';
         this.items = this.menus['PAUSE_MENU'];
         this.selectedIndex = 0;
+        this._scan.setIndex(0);
         this.render();
         AudioSys.speak("Paused");
     }
@@ -191,6 +188,7 @@ class MenuSystem {
         this.state = 'SETTINGS';
         this.items = this.menus['SETTINGS'];
         this.selectedIndex = 0;
+        this._scan.setIndex(0);
         this.render();
         AudioSys.speak("Settings");
     }
@@ -201,7 +199,8 @@ class MenuSystem {
         // Find the first selectable item (the Back button)
         this.selectedIndex = this.items.findIndex(item => item.selectable !== false);
         if (this.selectedIndex === -1) this.selectedIndex = 0;
-        
+        this._scan.setIndex(this.selectedIndex);
+
         this.render();
         AudioSys.speak("Instructions. Spacebar to Aim. Enter to Charge and Putt. Settings to change Aimer Style and Thickness, Ball color and other stuff. Casual Mode: try to get the least strokes possible. Challenge Mode: you must complete each hole within the PAR or the course will reset fully. Multiplayer: Play casually with friends. Be careful! You can knock others balls into hazards!");
     }
@@ -218,6 +217,7 @@ class MenuSystem {
             { text: "Cancel", action: () => this.showLevelSelect() }
         ];
         this.selectedIndex = 1; // Default to Proceed
+        this._scan.setIndex(1);
         this.render();
         AudioSys.speak("Warning. Loading a custom course requires mouse input.");
     }
@@ -254,6 +254,7 @@ class MenuSystem {
             { text: 'Back', action: () => this.showMainMenu() }
         ];
         this.selectedIndex = 0;
+        this._scan.setIndex(0);
         this.render();
         AudioSys.speak("Select Game Mode");
     }
@@ -267,6 +268,7 @@ class MenuSystem {
             { text: 'Back', action: () => this.showGameModeSelect() }
         ];
         this.selectedIndex = 0;
+        this._scan.setIndex(0);
         this.render();
         AudioSys.speak("How many players?");
     }
@@ -334,6 +336,7 @@ class MenuSystem {
         ];
         
         this.selectedIndex = 0;
+        this._scan.setIndex(0);
         this.render();
         AudioSys.speak(`Player ${playerIndex + 1}, choose color`);
     }
@@ -396,6 +399,7 @@ class MenuSystem {
         ];
         
         this.selectedIndex = 0;
+        this._scan.setIndex(0);
         this.render();
         AudioSys.speak("Select Course. " + this.availableCourses[this.selectedCourseIndex].name);
     }
@@ -462,28 +466,17 @@ class MenuSystem {
     }
 
     updateAutoScan() {
-        if (this.autoScanTimer) clearInterval(this.autoScanTimer);
-        this.autoScanTimer = null;
-        
-        if (typeof NarbeScanManager !== 'undefined') {
-            const settings = NarbeScanManager.getSettings();
-            if (settings.autoScan) {
-                const interval = NarbeScanManager.getScanInterval();
-                this.autoScanTimer = setInterval(() => {
-                    // Only scan if not handling other interactions?
-                    // Basic safeguard
-                    if (this.active && document.visibilityState === 'visible') {
-                        this.moveSelection(1);
-                    }
-                }, interval);
-            }
+        if (this.active) {
+            this._scan.resetAutoScan();
+        } else {
+            this._scan.stopAutoScan();
         }
     }
 
     render() {
         if (!this.active) {
             this.uiLayer.innerHTML = '';
-            if (this.autoScanTimer) { clearInterval(this.autoScanTimer); this.autoScanTimer = null; }
+            this._scan.stopAutoScan();
             return;
         }
 
