@@ -523,11 +523,6 @@
   <!-- Include shared voice manager -->
   <script src="../../../shared/voice-manager.js"></script>
   <script src="../../../shared/scan-manager.js"></script>
-  <script src="../../../shared/switch-input.js"></script>
-  <script src="../../../shared/scan-engine.js"></script>
-  <script src="../../../shared/menu-system.js"></script>
-  <script src="../../../shared/theme-provider.js"></script>
-  <script src="../../../shared/highlight-renderer.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.0/papaparse.min.js"></script>
   
   <script>
@@ -544,6 +539,7 @@
       autoScan: false,
       scanSpeed: 1200,
       scanTimer: null,
+      longPressThreshold: 3000, // Phase 2: inherited from NarbeScanManager
       spacePressed: false,
       spaceStartTime: 0,
       returnPressed: false,
@@ -637,36 +633,7 @@
       blue: '#0000ff', purple: '#800080', cyan: '#00ffff', pink: '#ff69b4'
     };
 
-    // NarbeHighlightRenderer for color state management
-    // Phraseboard uses CSS variables for actual highlight rendering (not direct element styling)
-    const highlightColorNames = Object.keys(HIGHLIGHT_COLORS).map(n => n.charAt(0).toUpperCase() + n.slice(1));
-    const highlightColorValues = Object.values(HIGHLIGHT_COLORS);
-    const initialHighlightIdx = Math.max(0, highlightColorValues.indexOf(state.highlightColor));
-    const highlightRenderer = new NarbeHighlightRenderer({
-      colors: highlightColorNames,
-      defaultColor: '#ffff00',
-      initialColorIndex: initialHighlightIdx,
-      initialStyle: 'full'
-    });
-
     const THEMES = { light: 'Light', dark: 'Dark', blue: 'Blue', green: 'Green', purple: 'Purple' };
-
-    // NarbeThemeProvider with CSS-variable-based themes (data-theme attribute)
-    const themeProvider = new NarbeThemeProvider({
-      themes: [
-        { name: 'Light', key: 'light' },
-        { name: 'Dark', key: 'dark' },
-        { name: 'Blue', key: 'blue' },
-        { name: 'Green', key: 'green' },
-        { name: 'Purple', key: 'purple' }
-      ],
-      initialIndex: Object.keys(THEMES).indexOf(state.theme) >= 0 ? Object.keys(THEMES).indexOf(state.theme) : 0,
-      applyFn: (theme) => {
-        state.theme = theme.key;
-        if (theme.key === 'light') document.body.removeAttribute('data-theme');
-        else document.body.setAttribute('data-theme', theme.key);
-      }
-    });
 
     const el = {
       mainGrid: document.getElementById('mainGrid'),
@@ -1261,12 +1228,7 @@ function updateHeaderForCurrentView(){
                  const speeds = [1000, 2000, 3000, 4000];
                  state.scanSpeed = speeds[nextIndex];
              }
-
-             // Keep switchInput repeat interval in sync
-             if (typeof switchInput !== 'undefined') {
-               switchInput.setThresholds({ repeatInterval: state.scanSpeed });
-             }
-
+             
              speak(`${nextIndex + 1} second speed`);
              if (state.scanning || state.autoScan) { stopScanning(); if (state.autoScan) startAutoScan(); }
              renderScanMenu(true);
@@ -1316,11 +1278,10 @@ function updateHeaderForCurrentView(){
       // Don't subtract sentence row space - it's now in its own dedicated row
       const totalSlots = state.gridSize.rows * state.gridSize.cols;
       
-      const buttons = Object.entries(HIGHLIGHT_COLORS).map(([name, color], idx) => ({
+      const buttons = Object.entries(HIGHLIGHT_COLORS).map(([name, color]) => ({
         text: name.charAt(0).toUpperCase() + name.slice(1),
         icon: '●',
         action: () => {
-          highlightRenderer.setColorIndex(idx);
           state.highlightColor = color;
           const colorName = name.charAt(0).toUpperCase() + name.slice(1);
           speak(`${colorName} highlight selected`);
@@ -1660,12 +1621,7 @@ function updateHeaderForCurrentView(){
       const settings = window.NarbeScanManager.getSettings();
       state.autoScan = settings.autoScan;
       state.scanSpeed = settings.scanInterval;
-
-      // Keep switchInput repeat interval in sync with scan speed
-      if (typeof switchInput !== 'undefined') {
-        switchInput.setThresholds({ repeatInterval: state.scanSpeed });
-      }
-
+      
       // Update timer if running
       if (state.scanning) {
         if (state.scanTimer) clearInterval(state.scanTimer);
@@ -1787,11 +1743,6 @@ function updateHeaderForCurrentView(){
         const speeds = [1000, 2000, 3000, 4000];
         // Use the speed from manager, fallback to 2000 if invalid index
         state.scanSpeed = speeds[settings.scanSpeedIndex] !== undefined ? speeds[settings.scanSpeedIndex] : 2000;
-
-        // Keep switchInput repeat interval in sync with scan speed
-        if (typeof switchInput !== 'undefined') {
-          switchInput.setThresholds({ repeatInterval: state.scanSpeed });
-        }
         
         // Update scanning state if needed
         if (state.autoScan) {
@@ -1806,11 +1757,11 @@ function updateHeaderForCurrentView(){
       }
     }
 
-    // Keyboard Handling via NarbeSwitchInput
-    // Track key-held state for auto-scan repeat suppression
-    let _autoScanKeyHeld = false;
-
-    // Pre-handler for auto-scan and modal modes (fire on keydown, not keyup)
+    // Keyboard Handling with Debounce
+    let backwardScanTimer = null;
+    let backwardScanInterval = null;
+    let returnActionTimer = null;
+    
     window.addEventListener('keydown', (e) => {
       // Allow F12/DevTools
       if (e.key === 'F12') return;
@@ -1826,78 +1777,81 @@ function updateHeaderForCurrentView(){
 
       // Auto Scan Logic
       if (state.autoScan) {
-        if ((e.code === 'Space' || e.code === 'Enter') && !_autoScanKeyHeld) {
+        if ((e.code === 'Space' || e.code === 'Enter') && !state.spacePressed && !state.returnPressed) {
             e.preventDefault();
-            _autoScanKeyHeld = true;
             // In auto scan, any switch selects
             selectCurrent();
             state.lastKeyPressTime = now;
         }
         return;
       }
-    });
 
-    window.addEventListener('keyup', (e) => {
-      if (e.code === 'Space' || e.code === 'Enter') {
-        _autoScanKeyHeld = false;
+      // Manual Scan Logic
+      if (e.code === 'Space' && !state.spacePressed) {
+        e.preventDefault();
+        state.spacePressed = true;
+        state.spaceStartTime = Date.now();
+        backwardScanTimer = setTimeout(() => {
+          if (state.spacePressed) {
+            scanBackward();
+            backwardScanInterval = setInterval(() => {
+              if (state.spacePressed) scanBackward();
+              else { clearInterval(backwardScanInterval); backwardScanInterval = null; }
+            }, state.scanSpeed);
+          }
+        }, state.longPressThreshold);
+      } else if (e.code === 'Enter' && !state.returnPressed) {
+        e.preventDefault();
+        state.returnPressed = true;
+        state.returnStartTime = Date.now();
+        state.returnActionExecuted = false;
+        returnActionTimer = setTimeout(() => {
+          if (state.returnPressed) {
+            state.returnActionExecuted = true;
+            if (state.scanMode === 'column') {
+              state.scanMode = 'row';
+              highlightCurrentRow();
+            } else if (state.scanMode === 'row') {
+              if (!state.videoModalActive) {
+                if (state.sentenceMode && el.sentenceRow.classList.contains('active')) {
+                  state.currentRow = 0;
+                  highlightCurrentRow();
+                  if (window.NarbeVoiceManager.getSettings().ttsEnabled) speak('Sentence row');
+                } else {
+                  if (state.currentMenu === 'category' || state.csvLoaded) navigateBack();
+                }
+              }
+            }
+          }
+        }, state.longPressThreshold);
       }
     });
 
-    // NarbeSwitchInput handles manual scan mode (long-press detection, backward scan)
-    const switchInput = new NarbeSwitchInput({
-      longPressThreshold: 3000,
-      enterLongPressThreshold: 3000,
-      repeatInterval: state.scanSpeed,
-      minPressDuration: 0, // debounce handled by pre-handler above
+    window.addEventListener('keyup', (e) => {
+      if (state.modalActive) return;
+      if (state.autoScan) return; // Auto scan handles action on keydown
 
-      shouldHandle: (e) => {
-        // Skip if F12/DevTools
-        if (e.key === 'F12') return false;
-        // Skip if within debounce window
-        const now = Date.now();
-        if (now - state.lastKeyPressTime < state.debounceDelay) return false;
-        // Skip if modal or auto-scan active (handled by pre-handler)
-        if (state.modalActive) return false;
-        if (state.autoScan) return false;
-        return true;
-      },
-
-      onScanForward: () => {
-        const now = Date.now();
-        scanForward();
-        state.lastKeyPressTime = now;
-      },
-
-      onScanBackwardStart: () => {
-        scanBackward();
-      },
-
-      onScanBackward: () => {
-        scanBackward();
-      },
-
-      onSelect: () => {
-        const now = Date.now();
-        selectCurrent();
-        state.lastKeyPressTime = now;
-      },
-
-      onPause: () => {
-        // Enter long-press: context-dependent action (same as original 3000ms timer)
-        if (state.scanMode === 'column') {
-          state.scanMode = 'row';
-          highlightCurrentRow();
-        } else if (state.scanMode === 'row') {
-          if (!state.videoModalActive) {
-            if (state.sentenceMode && el.sentenceRow.classList.contains('active')) {
-              state.currentRow = 0;
-              highlightCurrentRow();
-              if (window.NarbeVoiceManager.getSettings().ttsEnabled) speak('Sentence row');
-            } else {
-              if (state.currentMenu === 'category' || state.csvLoaded) navigateBack();
-            }
-          }
+      const now = Date.now();
+      if (e.code === 'Space' && state.spacePressed) {
+        e.preventDefault();
+        const duration = Date.now() - state.spaceStartTime;
+        state.spacePressed = false;
+        if (backwardScanTimer) { clearTimeout(backwardScanTimer); backwardScanTimer = null; }
+        if (backwardScanInterval) { clearInterval(backwardScanInterval); backwardScanInterval = null; }
+        if (duration < state.longPressThreshold && now - state.lastKeyPressTime >= state.debounceDelay) {
+          scanForward();
+          state.lastKeyPressTime = now;
         }
+      } else if (e.code === 'Enter' && state.returnPressed) {
+        e.preventDefault();
+        const duration = Date.now() - state.returnStartTime;
+        state.returnPressed = false;
+        if (returnActionTimer) { clearTimeout(returnActionTimer); returnActionTimer = null; }
+        if (!state.returnActionExecuted && duration < state.longPressThreshold && now - state.lastKeyPressTime >= state.debounceDelay) {
+          selectCurrent();
+          state.lastKeyPressTime = now;
+        }
+        state.returnActionExecuted = false;
       }
     });
 
@@ -1983,6 +1937,38 @@ function updateHeaderForCurrentView(){
     if (window.NarbeScanManager) {
         window.NarbeScanManager.subscribe(syncScanSettings);
         syncScanSettings();
+
+        // Phase 2: subscribe to shared longPressThreshold and theme changes
+        window.NarbeScanManager.subscribe(function(settings) {
+            // Sync long-press threshold
+            if (typeof settings.longPressThreshold === 'number' && settings.longPressThreshold > 0) {
+                state.longPressThreshold = settings.longPressThreshold;
+                console.log('Phraseboard: longPressThreshold updated to', state.longPressThreshold);
+            }
+
+            // Phase 2: Map sharedThemeIndex to phraseboard's 5 themes.
+            // Only apply as default if the user has no saved theme preference.
+            // Phraseboard themes: 0=light, 1=dark, 2=blue, 3=green, 4=purple
+            var savedSettings = null;
+            try { savedSettings = JSON.parse(localStorage.getItem(STORAGE_KEY)); } catch(e) {}
+            if (!savedSettings || !savedSettings.theme) {
+                var themeKeys = Object.keys(THEMES); // ['light','dark','blue','green','purple']
+                var idx = Math.max(0, Math.min(settings.sharedThemeIndex || 0, themeKeys.length - 1));
+                setTheme(themeKeys[idx], true); // skipSave — don't persist shared default
+                console.log('Phraseboard: sharedThemeIndex applied as default, theme =', themeKeys[idx]);
+            }
+
+            // Phase 2: Highlight color/style note:
+            // Phraseboard uses CSS custom properties (--rowHighlight, --columnHighlight)
+            // with named color values from HIGHLIGHT_COLORS, not an index-based system.
+            // HighlightRenderer inheritance is skipped — fundamentally different approach.
+        });
+
+        // Apply initial Phase 2 settings
+        var initSettings = window.NarbeScanManager.getSettings();
+        if (typeof initSettings.longPressThreshold === 'number' && initSettings.longPressThreshold > 0) {
+            state.longPressThreshold = initSettings.longPressThreshold;
+        }
     }
     
     // Apply loaded settings to CSS/DOM
@@ -2045,18 +2031,11 @@ function updateHeaderForCurrentView(){
       setTimeout(() => { updateScannable(); }, 100);
     });
 
-    // Theme (delegated to NarbeThemeProvider)
+    // Theme
     function setTheme(themeName, skipSave = false) {
-      const themeKeys = Object.keys(THEMES);
-      const idx = themeKeys.indexOf(themeName);
-      if (idx >= 0) {
-        themeProvider.setIndex(idx); // calls applyFn which sets state.theme and data-theme
-      } else {
-        // Fallback for unknown theme names
-        state.theme = themeName;
-        if (themeName === 'light') document.body.removeAttribute('data-theme');
-        else document.body.setAttribute('data-theme', themeName);
-      }
+      state.theme = themeName;
+      if (themeName === 'light') document.body.removeAttribute('data-theme');
+      else document.body.setAttribute('data-theme', themeName);
       if (!skipSave) saveSettings();
     }
 
