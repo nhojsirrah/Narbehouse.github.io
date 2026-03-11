@@ -25,7 +25,7 @@
   
   <script>
   // ====== Constants ======
-  const BACK_HOLD_THRESHOLD = 3000;   // ms to engage back-scan
+  let BACK_HOLD_THRESHOLD = 3000;   // ms to engage back-scan (synced from NarbeScanManager)
   // BACK_STEP_INTERVAL will be retrieved from NarbeScanManager
   const FORWARD_DEBOUNCE    = 160;    // ms debounce for space release forward step
   const RETURN_DEBOUNCE     = 160;    // ms debounce for return release
@@ -1005,11 +1005,20 @@
     }
     
     if (window.NarbeScanManager) {
-      if (window.NarbeScanManager.getSettings().autoScan) {
+      // Read initial long-press threshold
+      const initSettings = window.NarbeScanManager.getSettings();
+      if (typeof initSettings.longPressThreshold === 'number' && initSettings.longPressThreshold > 0) {
+        BACK_HOLD_THRESHOLD = initSettings.longPressThreshold;
+      }
+      if (initSettings.autoScan) {
         startAutoScan();
       }
       // Listen for changes
       window.NarbeScanManager.subscribe((s) => {
+         // Phase 2: sync long-press threshold
+         if (typeof s.longPressThreshold === 'number' && s.longPressThreshold > 0) {
+           BACK_HOLD_THRESHOLD = s.longPressThreshold;
+         }
          updateSettingsItems();
          if (s.autoScan) {
              startAutoScan();

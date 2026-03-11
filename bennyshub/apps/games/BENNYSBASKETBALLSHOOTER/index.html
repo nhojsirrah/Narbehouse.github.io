@@ -1321,7 +1321,10 @@
                 this.spacePressTime = 0;
                 this.enterPressed = false;
                 this.enterPressTime = 0;
-                
+
+                // Long-press threshold (synced from NarbeScanManager)
+                this.longPressThreshold = 3000;
+
                 this.spaceLongPressTimer = null;
                 this.spaceRepeatTimer = null;
                 this.enterLongPressTimer = null;
@@ -1451,10 +1454,10 @@
                     this.spacePressTime = Date.now();
                     
                     if (gameState === 'MENU' || gameState === 'PAUSED') {
-                        // Start timer for Long Press detection (3s)
+                        // Start timer for Long Press detection
                         this.spaceLongPressTimer = setTimeout(() => {
                             this.startBackwardScan();
-                        }, 3000);
+                        }, this.longPressThreshold);
                     } else if (gameState === 'AIMING' || gameState === 'CHARGING') {
                         aimActive = true;
                     } 
@@ -1511,7 +1514,7 @@
                     const duration = Date.now() - this.spacePressTime;
                     
                     if (gameState === 'MENU' || gameState === 'PAUSED') {
-                        if (duration < 3000) {
+                        if (duration < this.longPressThreshold) {
                             MenuManager.scanNext();
                         }
                     } else if (gameState === 'AIMING' || gameState === 'CHARGING') {
@@ -1949,6 +1952,19 @@
 
         const MenuManager = new MenuSystem();
         const Input = new InputHandler();
+
+        // Phase 2: Sync long-press threshold from NarbeScanManager
+        if (window.NarbeScanManager) {
+            const initSettings = window.NarbeScanManager.getSettings();
+            if (typeof initSettings.longPressThreshold === 'number' && initSettings.longPressThreshold > 0) {
+                Input.longPressThreshold = initSettings.longPressThreshold;
+            }
+            window.NarbeScanManager.subscribe((s) => {
+                if (typeof s.longPressThreshold === 'number' && s.longPressThreshold > 0) {
+                    Input.longPressThreshold = s.longPressThreshold;
+                }
+            });
+        }
 
         // --- Removed old key listeners ---
         // (Cleaned up in this replacement)

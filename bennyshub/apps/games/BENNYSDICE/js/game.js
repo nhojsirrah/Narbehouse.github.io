@@ -246,8 +246,17 @@ function stopAutoScan() {
 
 // Subscribe to scan manager changes
 if (window.NarbeScanManager) {
-    window.NarbeScanManager.subscribe(() => {
-        if (window.NarbeScanManager.getSettings().autoScan) {
+    // Read initial long-press threshold
+    const initSettings = window.NarbeScanManager.getSettings();
+    if (typeof initSettings.longPressThreshold === 'number' && initSettings.longPressThreshold > 0) {
+        inputState.config.longPress = initSettings.longPressThreshold;
+    }
+    window.NarbeScanManager.subscribe((s) => {
+        // Phase 2: sync long-press threshold
+        if (typeof s.longPressThreshold === 'number' && s.longPressThreshold > 0) {
+            inputState.config.longPress = s.longPressThreshold;
+        }
+        if (s.autoScan) {
             startAutoScan();
         } else {
             stopAutoScan();
@@ -255,7 +264,7 @@ if (window.NarbeScanManager) {
         updateSettingsUI();
     });
     // Initial check
-    if (window.NarbeScanManager.getSettings().autoScan) {
+    if (initSettings.autoScan) {
         startAutoScan();
     }
 }

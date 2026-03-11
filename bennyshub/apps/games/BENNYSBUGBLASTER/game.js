@@ -3431,6 +3431,7 @@ function loop() {
 let keysPressed = {};
 let keyTimers = {};
 let spaceHoldInterval = null;
+let longPressThreshold = 3000; // synced from NarbeScanManager
 
 // Re-enable Resize
 window.addEventListener('resize', () => {
@@ -3796,7 +3797,7 @@ window.addEventListener('keyup', (e) => {
     keysPressed[e.code] = false;
     
     if (e.code === 'Space') {
-        if (duration < 3000) {
+        if (duration < longPressThreshold) {
             scanForward(); // Back to Forward on Tap
         }
     }
@@ -3815,7 +3816,7 @@ function checkInputHolds() {
     // Space Hold Logic -> Scan Backward
     if (keysPressed['Space']) {
         let duration = now - keyTimers['Space'];
-        if (duration > 3000) {
+        if (duration > longPressThreshold) {
             if (!keysPressed['Space_LastScan']) keysPressed['Space_LastScan'] = now;
             
             let interval = (gameState === 'PLAYING') ? 500 : 2000;
@@ -4080,6 +4081,19 @@ window.addEventListener('touchstart', (e) => {
     let touch = e.changedTouches[0];
     handleInput(touch.clientX - rect.left, touch.clientY - rect.top);
 }, {passive: false});
+
+// Phase 2: Sync long-press threshold from NarbeScanManager
+if (typeof window.NarbeScanManager !== 'undefined') {
+    const initSettings = window.NarbeScanManager.getSettings();
+    if (typeof initSettings.longPressThreshold === 'number' && initSettings.longPressThreshold > 0) {
+        longPressThreshold = initSettings.longPressThreshold;
+    }
+    window.NarbeScanManager.subscribe((s) => {
+        if (typeof s.longPressThreshold === 'number' && s.longPressThreshold > 0) {
+            longPressThreshold = s.longPressThreshold;
+        }
+    });
+}
 
 // Start
 reset_game_state();

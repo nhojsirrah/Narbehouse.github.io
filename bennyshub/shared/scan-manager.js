@@ -15,7 +15,8 @@ window.NarbeScanManager = (function() {
   // Default settings
   const DEFAULT_SETTINGS = {
     autoScan: false,   // Default per agents.md (Off for Ben games)
-    scanSpeedIndex: 1  // Default to 2000ms (index 1)
+    scanSpeedIndex: 1, // Default to 2000ms (index 1)
+    longPressThreshold: 3000 // ms before a held key triggers long-press action
   };
 
   // Internal state
@@ -36,6 +37,10 @@ window.NarbeScanManager = (function() {
         // Ensure index is valid
         if (settings.scanSpeedIndex < 0 || settings.scanSpeedIndex >= SCAN_SPEEDS.length) {
           settings.scanSpeedIndex = DEFAULT_SETTINGS.scanSpeedIndex;
+        }
+        // Ensure longPressThreshold is a positive number
+        if (typeof settings.longPressThreshold !== 'number' || settings.longPressThreshold <= 0) {
+          settings.longPressThreshold = DEFAULT_SETTINGS.longPressThreshold;
         }
       }
     } catch (error) {
@@ -76,7 +81,8 @@ window.NarbeScanManager = (function() {
     return {
       autoScan: settings.autoScan,
       scanSpeedIndex: settings.scanSpeedIndex,
-      scanInterval: SCAN_SPEEDS[settings.scanSpeedIndex]
+      scanInterval: SCAN_SPEEDS[settings.scanSpeedIndex],
+      longPressThreshold: settings.longPressThreshold
     };
   }
 
@@ -216,13 +222,18 @@ window.NarbeScanManager = (function() {
         changed = true;
       }
       
-      if (typeof newSettings.scanSpeedIndex === 'number' && 
-          newSettings.scanSpeedIndex >= 0 && 
+      if (typeof newSettings.scanSpeedIndex === 'number' &&
+          newSettings.scanSpeedIndex >= 0 &&
           newSettings.scanSpeedIndex < SCAN_SPEEDS.length) {
         settings.scanSpeedIndex = newSettings.scanSpeedIndex;
         changed = true;
       }
-      
+
+      if (typeof newSettings.longPressThreshold === 'number' && newSettings.longPressThreshold > 0) {
+        settings.longPressThreshold = newSettings.longPressThreshold;
+        changed = true;
+      }
+
       if (changed) {
         saveSettings();
       }
