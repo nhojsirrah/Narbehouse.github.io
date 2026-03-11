@@ -329,10 +329,10 @@ function initMenuSystem() {
     // Build pauseSettings from settings items but with Back going to pause menu
     const settingsItems = menuSystem.getCurrentItems ? null : null; // not available yet
     // We need to reference the settings menu items directly
-    const settingsMenu = menuSystem.menus ? menuSystem.menus.settings : null;
+    const settingsMenu = menuSystem._menus ? menuSystem._menus.settings : null;
     // Since MenuSystem stores menus internally, we build pauseSettings from the same items
     // but override the Back action
-    menuSystem.menus.pauseSettings = menuSystem.menus.settings.map(item => {
+    menuSystem._menus.pauseSettings = menuSystem._menus.settings.map(item => {
         if (item.text === "Back") return { text: "Back", action: () => openPauseMenu() };
         return item;
     });
@@ -363,7 +363,7 @@ function initScanEngine() {
         },
         onSelect: (item, index) => {
             if (state.mode === 'game') {
-                selectCurrentGameItem();
+                selectCurrentGameItem(item);
             } else {
                 // Menu selection
                 playSound('select');
@@ -1317,9 +1317,9 @@ function coordsToText(r, c) {
 
 // --- Game Item Selection (board scanning) ---
 
-function selectCurrentGameItem() {
-    if (state.scanItems.length === 0) return;
-    const item = state.scanItems[state.scanIndexV];
+function selectCurrentGameItem(item) {
+    if (!item) item = state.scanItems[state.scanIndexV];
+    if (!item) return;
     if (item.type === 'piece') {
         handleCellClick(item.r, item.c);
     } else if (item.type === 'move') {
