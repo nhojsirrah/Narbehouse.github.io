@@ -125,13 +125,13 @@ function init() {
 
              // Phase 2: Inherit shared theme if not locally overridden
              if (!_hasLocalTheme && scanState.sharedThemeIndex !== undefined) {
-                 settings.themeIndex = scanState.sharedThemeIndex;
+                 settings.themeIndex = Math.min(scanState.sharedThemeIndex, themes.length - 1);
                  applyTheme();
              }
 
              // Phase 2: Inherit shared highlight color if not locally overridden
              if (!_hasLocalHighlightColor && scanState.sharedHighlightColorIndex !== undefined) {
-                 settings.highlightColorIndex = scanState.sharedHighlightColorIndex;
+                 settings.highlightColorIndex = Math.min(scanState.sharedHighlightColorIndex, highlightColors.length - 1);
                  updateHighlights();
              }
 
@@ -164,10 +164,10 @@ function loadSettings() {
         // Phase 2: Inherit shared defaults from NarbeScanManager when no per-game preference is saved
         const scanSettings = window.NarbeScanManager ? window.NarbeScanManager.getSettings() : {};
         if (!savedSettings || savedSettings.themeIndex === undefined) {
-            settings.themeIndex = scanSettings.sharedThemeIndex || 0;
+            settings.themeIndex = Math.min(scanSettings.sharedThemeIndex || 0, themes.length - 1);
         }
         if (!savedSettings || savedSettings.highlightColorIndex === undefined) {
-            settings.highlightColorIndex = scanSettings.sharedHighlightColorIndex || 0;
+            settings.highlightColorIndex = Math.min(scanSettings.sharedHighlightColorIndex || 0, highlightColors.length - 1);
         }
         if (!savedSettings || savedSettings.highlightStyle === undefined) {
             settings.highlightStyle = scanSettings.sharedHighlightStyle || 'outline';
