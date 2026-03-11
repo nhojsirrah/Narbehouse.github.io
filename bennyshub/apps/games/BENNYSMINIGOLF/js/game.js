@@ -76,6 +76,37 @@ class Game {
         Input.onEvent = (event, data) => this.handleInput(event, data);
         Input.setMode('MENU');
 
+        // Phase 1: NarbeSwitchInput for menu navigation only
+        // shouldHandle returns false during gameplay so Space/Enter pass through
+        // to InputHandler's existing gameplay handlers (aim rotation, power charging)
+        if (typeof NarbeSwitchInput !== 'undefined') {
+            window._miniGolfSwitchInput = new NarbeSwitchInput({
+                longPressThreshold: 3000,
+                enterLongPressThreshold: 0, // No pause from Enter in menus
+                repeatInterval: (typeof NarbeScanManager !== 'undefined')
+                    ? NarbeScanManager.getScanInterval() : 2000,
+                shouldHandle: () => {
+                    // Only handle input when in menu states, not during gameplay
+                    return this.state === 'MENU' || this.state === 'PAUSED';
+                },
+                onScanForward: () => {
+                    this.menu.handleInput('SCAN_NEXT');
+                },
+                onScanBackwardStart: () => {
+                    if (typeof NarbeVoiceManager !== 'undefined') {
+                        NarbeVoiceManager.speak('Backwards scanning');
+                    }
+                },
+                onScanBackward: () => {
+                    this.menu.handleInput('SCAN_PREV');
+                },
+                onScanBackwardStop: () => {},
+                onSelect: () => {
+                    this.menu.handleInput('SELECT');
+                }
+            });
+        }
+
         // Mouse Input
         this.canvas.addEventListener('mousemove', (e) => this.handleMouseMove(e));
         this.canvas.addEventListener('mousedown', (e) => this.handleMouseDown(e));

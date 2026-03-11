@@ -84,8 +84,10 @@ class InputHandler {
         if (e.code === 'Space' && !this.spacePressed) {
             this.spacePressed = true;
             this.spaceHoldStartTime = Date.now();
-            
+
             if (this.mode === 'MENU') {
+                // When NarbeSwitchInput is active and handling this state, it handles menu Space input
+                if (window._miniGolfSwitchInput && window._miniGolfSwitchInput._shouldHandle()) return;
                 // Set timeout for backwards scanning - only if not already active
                 if (!this.spaceHoldTimeout && !this.backwardScanInterval) {
                     this.spaceHoldTimeout = setTimeout(() => {
@@ -105,7 +107,10 @@ class InputHandler {
             this.enterHoldStart = Date.now();
             this.pauseTriggered = false;
 
-            if (this.mode === 'GAMEPLAY') {
+            if (this.mode === 'MENU') {
+                // When NarbeSwitchInput is active and handling this state, it handles menu Enter input
+                if (window._miniGolfSwitchInput && window._miniGolfSwitchInput._shouldHandle()) return;
+            } else if (this.mode === 'GAMEPLAY') {
                 // Set timeout for pause - only if not already active
                 if (!this.pauseHoldTimeout) {
                     this.pauseHoldTimeout = setTimeout(() => {
@@ -127,7 +132,7 @@ class InputHandler {
         if (e.code === 'Space' && this.spacePressed) {
             this.spacePressed = false;
             const duration = Date.now() - this.spaceHoldStartTime;
-            
+
             // Clear backwards scan timeout
             if (this.spaceHoldTimeout) {
                 clearTimeout(this.spaceHoldTimeout);
@@ -135,6 +140,11 @@ class InputHandler {
             }
 
             if (this.mode === 'MENU') {
+                // When NarbeSwitchInput is active and handling this state, it handles menu Space input
+                if (window._miniGolfSwitchInput && window._miniGolfSwitchInput._shouldHandle()) {
+                    this.spaceHoldStartTime = 0;
+                    return;
+                }
                 const wasBackwardScanning = this.backwardScanInterval !== null;
                 this.stopBackwardScan();
 
@@ -149,14 +159,19 @@ class InputHandler {
 
         if (e.code === 'Enter' && this.enterPressed) {
             this.enterPressed = false;
-            
+
             // Clear pause timeout
             if (this.pauseHoldTimeout) {
                 clearTimeout(this.pauseHoldTimeout);
                 this.pauseHoldTimeout = null;
             }
-            
+
             if (this.mode === 'MENU') {
+                // When NarbeSwitchInput is active and handling this state, it handles menu Enter input
+                if (window._miniGolfSwitchInput && window._miniGolfSwitchInput._shouldHandle()) {
+                    this.pauseTriggered = false;
+                    return;
+                }
                 if (!this.pauseTriggered) {
                     this.trigger('SELECT');
                 }
