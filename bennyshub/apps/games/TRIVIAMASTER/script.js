@@ -16,24 +16,32 @@ const state = {
         voiceIndex: 0,
         gamesSource: localStorage.getItem('trivia_games_source') || 'ALL'
     },
+    scanTimer: null,
+    currentIndex: -1,
+    activeElements: [],
     isPaused: false,
     audioContext: null,
     gameStartTime: 0,
     questionStartTime: 0,
     categoryPage: 0,
-    previousScreen: null // To track where to go back from settings
+    previousScreen: null, // To track where to go back from settings
+    inputState: {
+        spaceDownTime: 0,
+        enterDownTime: 0,
+        longPressThreshold: 3000, // 3 seconds
+        repeatInterval: 2000,     // 2 seconds
+        spaceTimer: null,
+        spaceInterval: null,
+        enterTimer: null,
+        spaceLongTriggered: false,
+        enterLongTriggered: false
+    }
 };
 
 // Constants
 // Note: Scan speeds are now managed by NarbeScanManager
 
-// Shared Module Instances (initialized in init())
-let switchInput = null;
-let scanEngine = null;
-let themeProvider = null;
-let highlightRenderer = null;
-let menuSystem = null;
-let lastHighlightedEl = null; // Track last highlighted element for 'scanned' class
+const THEMES = ['Default', 'Dark', 'Pastel', 'Neon', 'High Contrast'];
 
 const CATS_PAGE_FIRST = 5;
 const CATS_PAGE_OTHER = 6;
@@ -134,117 +142,39 @@ async function init() {
         state.settings.autoScan = s.autoScan;
         state.settings.scanSpeed = (s.scanInterval / 1000) + 's';
 
+        // Phase 2: Inherit longPressThreshold from shared settings
+        if (typeof s.longPressThreshold === 'number') {
+            state.inputState.longPressThreshold = s.longPressThreshold;
+        }
+
+        // Phase 2: Inherit shared theme as default (no per-game persistence in TriviaMaster)
+        if (typeof s.sharedThemeIndex === 'number') {
+            const clampedIndex = Math.min(s.sharedThemeIndex, THEMES.length - 1);
+            state.settings.theme = THEMES[clampedIndex];
+        }
+
         // Subscribe to changes
         window.NarbeScanManager.subscribe((settings) => {
             state.settings.autoScan = settings.autoScan;
             state.settings.scanSpeed = (settings.scanInterval / 1000) + 's';
+
+            // Phase 2: Update longPressThreshold on change
+            if (typeof settings.longPressThreshold === 'number') {
+                state.inputState.longPressThreshold = settings.longPressThreshold;
+            }
+
             updateSettingsUI();
             startScanning();
         });
     }
 
-    // Initialize shared modules
-
-    // Module 5: HighlightRenderer — TriviaMaster uses native CSS 'scanned' class
-    highlightRenderer = new NarbeHighlightRenderer({
-        colors: ['Theme Default'],
-        defaultColor: '#ffcc00',
-        initialColorIndex: 0,
-        initialStyle: 'outline'
-    });
-
-    // Module 4: ThemeProvider — 5 conceptual themes
-    themeProvider = new NarbeThemeProvider({
-        catalog: 'trivia-5',
-        initialIndex: 0,
-        applyFn: function(theme) {
-            // Remove all theme classes
-            document.body.classList.remove('theme-dark', 'theme-pastel', 'theme-neon', 'theme-high-contrast');
-            // Reset CSS variables
-            document.documentElement.style.removeProperty('--primary-gradient');
-            document.documentElement.style.removeProperty('--secondary-gradient');
-            document.documentElement.style.removeProperty('--bg-gradient');
-            // Add new theme class if not default
-            if (theme.className) {
-                document.body.classList.add(theme.className);
-            }
-            state.settings.theme = theme.name;
-        }
-    });
-
-    // Module 3: MenuSystem — TriviaMaster uses static HTML with click delegation.
-    // The menu system tracks screen state; rendering is handled by existing HTML.
-    menuSystem = new NarbeMenuSystem({
-        menus: {},
-        speak: speak,
-        renderOverride: function() {} // No-op: HTML is static
-    });
-
-    // Module 2: ScanEngine — Linear scan over active DOM elements
-    scanEngine = new NarbeLinearScan({
-        getItems: function() { return getScannables(); },
-        onFocus: function(item, index) {
-            // Clear previous highlight
-            if (lastHighlightedEl) {
-                lastHighlightedEl.classList.remove('scanned');
-            }
-
-            // Apply highlight via native CSS class
-            item.classList.add('scanned');
-            lastHighlightedEl = item;
-            item.scrollIntoView({ behavior: 'smooth', block: 'center' });
-            audio.playScan();
-
-            updateImagePopup(item);
-
-            // TTS for scanned item
-            const text = item.innerText || item.getAttribute('aria-label') || "Button";
-            speak(text);
-
-            // Auto-Pause on Media Container or Question Text
-            if (state.settings.autoScan && (item.id === 'media-container' || item.id === 'question-text-wrapper')) {
-                scanEngine.stopAutoScan();
-            }
-        },
-        onSelect: function(item, index) {
-            selectCurrent();
-        }
-    });
-
-    // Module 1: SwitchInput — keyboard event handling
-    switchInput = new NarbeSwitchInput({
-        longPressThreshold: 3000,
-        enterLongPressThreshold: 3000,
-        repeatInterval: 2000,
-        onScanForward: function() {
-            scanNext();
-            startScanning(); // Reset/Resume auto scan timer if active
-        },
-        onScanBackwardStart: function() {
-            // Stop auto-scan while manually scanning backwards
-            scanEngine.stopAutoScan();
-        },
-        onScanBackward: function() {
-            scanPrev();
-        },
-        onScanBackwardStop: function() {
-            startScanning(); // Resume auto scan timer if active
-        },
-        onSelect: function() {
-            selectCurrent();
-        },
-        onPause: function() {
-            togglePause();
-        }
-    });
-
     // No longer loading default questions immediately
     // We wait for user to select a game
-
+    
     setupEventListeners();
     showScreen('main-menu');
     startScanning();
-
+    
     // Resume Audio Context on first interaction
     document.body.addEventListener('click', () => {
         if (audio.ctx.state === 'suspended') audio.ctx.resume();
@@ -362,11 +292,15 @@ function getScannables() {
 }
 
 function startScanning() {
-    if (scanEngine) {
-        scanEngine.stopAutoScan();
-        if (state.settings.autoScan) {
-            scanEngine.startAutoScan();
+    if (state.scanTimer) clearInterval(state.scanTimer);
+    if (state.settings.autoScan) {
+        let speed = 2000;
+        if (window.NarbeScanManager) {
+            speed = window.NarbeScanManager.getScanInterval();
         }
+        state.scanTimer = setInterval(scanNext, speed);
+    } else {
+        state.scanTimer = null;
     }
 }
 
@@ -553,50 +487,105 @@ function updateImagePopup(el) {
 
 function resetScanning() {
     // Remove highlight from current
-    if (lastHighlightedEl) {
-        lastHighlightedEl.classList.remove('scanned');
-        lastHighlightedEl = null;
+    if (state.activeElements[state.currentIndex]) {
+        state.activeElements[state.currentIndex].classList.remove('scanned');
     }
-
+    
     updateImagePopup(null); // Hide popup
 
-    if (scanEngine) {
-        scanEngine.reset();
-    }
-
+    state.activeElements = getScannables();
+    state.currentIndex = -1;
+    
     // Restart timer
     startScanning();
 }
 
 function scanNext() {
-    if (scanEngine) {
-        scanEngine.forward();
+    if (state.activeElements.length === 0) {
+        state.activeElements = getScannables();
+        if (state.activeElements.length === 0) return;
+    }
+
+    // Remove prev highlight
+    if (state.currentIndex >= 0 && state.currentIndex < state.activeElements.length) {
+        state.activeElements[state.currentIndex].classList.remove('scanned');
+    }
+
+    // Move next
+    state.currentIndex++;
+    if (state.currentIndex >= state.activeElements.length) {
+        state.currentIndex = 0;
+    }
+
+    // Highlight new
+    const el = state.activeElements[state.currentIndex];
+    if (el) {
+        el.classList.add('scanned');
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        audio.playScan();
+        
+        updateImagePopup(el); // Show popup if image
+
+        // TTS for scanned item
+        const text = el.innerText || el.getAttribute('aria-label') || "Button";
+        speak(text);
+
+        // Auto-Pause on Media Container or Question Text
+        if (state.settings.autoScan && (el.id === 'media-container' || el.id === 'question-text-wrapper')) {
+            if (state.scanTimer) clearInterval(state.scanTimer);
+            state.scanTimer = null; // Explicitly nullify to ensure we know it's stopped
+        }
     }
 }
 
 function scanPrev() {
-    if (scanEngine) {
-        scanEngine.backward();
+    if (state.activeElements.length === 0) {
+        state.activeElements = getScannables();
+        if (state.activeElements.length === 0) return;
+    }
+
+    // Remove prev highlight
+    if (state.currentIndex >= 0 && state.currentIndex < state.activeElements.length) {
+        state.activeElements[state.currentIndex].classList.remove('scanned');
+    }
+
+    // Move prev
+    state.currentIndex--;
+    if (state.currentIndex < 0) {
+        state.currentIndex = state.activeElements.length - 1;
+    }
+
+    // Highlight new
+    const el = state.activeElements[state.currentIndex];
+    if (el) {
+        el.classList.add('scanned');
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        audio.playScan();
+        
+        updateImagePopup(el); // Show popup if image
+
+        // TTS for scanned item
+        const text = el.innerText || el.getAttribute('aria-label') || "Button";
+        speak(text);
     }
 }
 
 function selectCurrent() {
-    const items = getScannables();
-    const idx = scanEngine ? scanEngine.getIndex() : -1;
-    if (idx >= 0 && idx < items.length) {
-        const el = items[idx];
+    if (state.currentIndex >= 0 && state.currentIndex < state.activeElements.length) {
+        const el = state.activeElements[state.currentIndex];
 
         // Resume scanning if paused on media or question
+        // Check if we are actually paused (scanTimer is null) OR if we just hit one of these items
         if (state.settings.autoScan && (el.id === 'media-container' || el.id === 'question-text-wrapper')) {
             scanNext();
-
+            
             // Only start scanning if the NEXT item isn't also a pause target
-            const newItems = getScannables();
-            const newIdx = scanEngine.getIndex();
-            const nextEl = newItems[newIdx];
+            const nextEl = state.activeElements[state.currentIndex]; // scanNext updated currentIndex
             if (nextEl && (nextEl.id === 'media-container' || nextEl.id === 'question-text-wrapper')) {
                 // Do not start scanning, we want to pause on this new item too
-                scanEngine.stopAutoScan();
+                // Ensure timer is cleared just in case scanNext didn't do it (it should have)
+                if (state.scanTimer) clearInterval(state.scanTimer);
+                state.scanTimer = null;
             } else {
                 startScanning();
             }
@@ -609,8 +598,69 @@ function selectCurrent() {
 }
 
 // Input Handling
-// Note: Keyboard input (Space/Enter) is now handled by NarbeSwitchInput (initialized in init())
 function setupEventListeners() {
+    document.addEventListener('keydown', (e) => {
+        if (e.repeat) return; // Ignore auto-repeat
+
+        if (e.code === 'Space') {
+            e.preventDefault();
+            state.inputState.spaceDownTime = Date.now();
+            
+            // Start timer for long press (3s)
+            state.inputState.spaceTimer = setTimeout(() => {
+                // Long press detected
+                state.inputState.spaceLongTriggered = true;
+                
+                // Stop auto-scan while manually scanning backwards
+                if (state.scanTimer) clearInterval(state.scanTimer);
+
+                scanPrev(); // Initial backward scan
+                
+                // Start repeating backward scan every 2s
+                state.inputState.spaceInterval = setInterval(() => {
+                    scanPrev();
+                }, state.inputState.repeatInterval);
+                
+            }, state.inputState.longPressThreshold);
+
+        } else if (e.code === 'Enter') {
+            e.preventDefault();
+            state.inputState.enterDownTime = Date.now();
+            
+            // Start timer for long press (3s)
+            state.inputState.enterTimer = setTimeout(() => {
+                // Long press detected - Open Pause Menu immediately
+                state.inputState.enterLongTriggered = true;
+                togglePause();
+            }, state.inputState.longPressThreshold);
+        }
+    });
+
+    document.addEventListener('keyup', (e) => {
+        if (e.code === 'Space') {
+            e.preventDefault();
+            clearTimeout(state.inputState.spaceTimer);
+            clearInterval(state.inputState.spaceInterval);
+            
+            if (!state.inputState.spaceLongTriggered) {
+                // Short press - Scan Forward
+                scanNext();
+            }
+            startScanning(); // Reset/Resume auto scan timer if active
+            state.inputState.spaceLongTriggered = false;
+
+        } else if (e.code === 'Enter') {
+            e.preventDefault();
+            clearTimeout(state.inputState.enterTimer);
+            
+            if (!state.inputState.enterLongTriggered) {
+                // Short press - Select
+                selectCurrent();
+            }
+            state.inputState.enterLongTriggered = false;
+        }
+    });
+
     // Click handlers for all interactive elements (delegation)
     document.body.addEventListener('click', (e) => {
         // Allow clicking on scannable items OR the pause button (which is no longer scannable)
@@ -701,7 +751,9 @@ function setupEventListeners() {
                 window.NarbeScanManager.cycleScanSpeed();
             }
         } else if (action === 'cycle-theme') {
-            themeProvider.cycle(1);
+            const idx = THEMES.indexOf(state.settings.theme);
+            state.settings.theme = THEMES[(idx + 1) % THEMES.length];
+            applyTheme(state.settings.theme);
             updateSettingsUI();
         } else if (action === 'cycle-voice') {
             if (window.NarbeVoiceManager) {
@@ -847,22 +899,17 @@ function resetTheme() {
 }
 
 function applyTheme(themeName) {
-    if (themeProvider) {
-        // Find theme by name and set it via themeProvider
-        const themes = themeProvider.getThemes();
-        const idx = themes.findIndex(t => t.name === themeName);
-        if (idx >= 0) {
-            themeProvider.setIndex(idx);
-        }
-    } else {
-        // Fallback before themeProvider is initialized
-        document.documentElement.style.removeProperty('--primary-gradient');
-        document.documentElement.style.removeProperty('--secondary-gradient');
-        document.documentElement.style.removeProperty('--bg-gradient');
-        document.body.classList.remove('theme-dark', 'theme-pastel', 'theme-neon', 'theme-high-contrast');
-        if (themeName !== 'Default') {
-            document.body.classList.add('theme-' + themeName.toLowerCase().replace(' ', '-'));
-        }
+    // Reset CSS variables to default first (in case they were overridden by inline styles)
+    document.documentElement.style.removeProperty('--primary-gradient');
+    document.documentElement.style.removeProperty('--secondary-gradient');
+    document.documentElement.style.removeProperty('--bg-gradient');
+
+    // Remove all theme classes
+    document.body.classList.remove('theme-dark', 'theme-pastel', 'theme-neon', 'theme-high-contrast');
+    
+    // Add new theme class if not default
+    if (themeName !== 'Default') {
+        document.body.classList.add('theme-' + themeName.toLowerCase().replace(' ', '-'));
     }
 }
 
@@ -1443,10 +1490,9 @@ function loadQuestion() {
     resetScanning();
 
     // Start scanning on the Question Text immediately
-    const scannables = getScannables();
-    const qIndex = scannables.findIndex(el => el.id === 'question-text-wrapper');
-    if (qIndex !== -1 && scanEngine) {
-        scanEngine.setIndex(qIndex - 1);
+    const qIndex = state.activeElements.findIndex(el => el.id === 'question-text-wrapper');
+    if (qIndex !== -1) {
+        state.currentIndex = qIndex - 1;
         scanNext();
     }
 }
@@ -1632,10 +1678,10 @@ function triggerConfetti() {
 function togglePause() {
     state.isPaused = !state.isPaused;
     const overlay = document.getElementById('pause-overlay');
-
+    
     if (state.isPaused) {
         overlay.classList.remove('hidden');
-        if (scanEngine) scanEngine.stopAutoScan();
+        clearInterval(state.scanTimer);
         speak("Game Paused");
     } else {
         overlay.classList.add('hidden');
