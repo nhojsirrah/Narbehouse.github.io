@@ -539,6 +539,7 @@
       autoScan: false,
       scanSpeed: 1200,
       scanTimer: null,
+      longPressThreshold: 3000, // Phase 2: inherited from NarbeScanManager
       spacePressed: false,
       spaceStartTime: 0,
       returnPressed: false,
@@ -1798,7 +1799,7 @@ function updateHeaderForCurrentView(){
               else { clearInterval(backwardScanInterval); backwardScanInterval = null; }
             }, state.scanSpeed);
           }
-        }, 3000);
+        }, state.longPressThreshold);
       } else if (e.code === 'Enter' && !state.returnPressed) {
         e.preventDefault();
         state.returnPressed = true;
@@ -1822,7 +1823,7 @@ function updateHeaderForCurrentView(){
               }
             }
           }
-        }, 3000);
+        }, state.longPressThreshold);
       }
     });
 
@@ -1837,7 +1838,7 @@ function updateHeaderForCurrentView(){
         state.spacePressed = false;
         if (backwardScanTimer) { clearTimeout(backwardScanTimer); backwardScanTimer = null; }
         if (backwardScanInterval) { clearInterval(backwardScanInterval); backwardScanInterval = null; }
-        if (duration < 3000 && now - state.lastKeyPressTime >= state.debounceDelay) {
+        if (duration < state.longPressThreshold && now - state.lastKeyPressTime >= state.debounceDelay) {
           scanForward();
           state.lastKeyPressTime = now;
         }
@@ -1846,7 +1847,7 @@ function updateHeaderForCurrentView(){
         const duration = Date.now() - state.returnStartTime;
         state.returnPressed = false;
         if (returnActionTimer) { clearTimeout(returnActionTimer); returnActionTimer = null; }
-        if (!state.returnActionExecuted && duration < 3000 && now - state.lastKeyPressTime >= state.debounceDelay) {
+        if (!state.returnActionExecuted && duration < state.longPressThreshold && now - state.lastKeyPressTime >= state.debounceDelay) {
           selectCurrent();
           state.lastKeyPressTime = now;
         }
@@ -1936,6 +1937,38 @@ function updateHeaderForCurrentView(){
     if (window.NarbeScanManager) {
         window.NarbeScanManager.subscribe(syncScanSettings);
         syncScanSettings();
+
+        // Phase 2: subscribe to shared longPressThreshold and theme changes
+        window.NarbeScanManager.subscribe(function(settings) {
+            // Sync long-press threshold
+            if (typeof settings.longPressThreshold === 'number' && settings.longPressThreshold > 0) {
+                state.longPressThreshold = settings.longPressThreshold;
+                console.log('Phraseboard: longPressThreshold updated to', state.longPressThreshold);
+            }
+
+            // Phase 2: Map sharedThemeIndex to phraseboard's 5 themes.
+            // Only apply as default if the user has no saved theme preference.
+            // Phraseboard themes: 0=light, 1=dark, 2=blue, 3=green, 4=purple
+            var savedSettings = null;
+            try { savedSettings = JSON.parse(localStorage.getItem(STORAGE_KEY)); } catch(e) {}
+            if (!savedSettings || !savedSettings.theme) {
+                var themeKeys = Object.keys(THEMES); // ['light','dark','blue','green','purple']
+                var idx = Math.max(0, Math.min(settings.sharedThemeIndex || 0, themeKeys.length - 1));
+                setTheme(themeKeys[idx], true); // skipSave — don't persist shared default
+                console.log('Phraseboard: sharedThemeIndex applied as default, theme =', themeKeys[idx]);
+            }
+
+            // Phase 2: Highlight color/style note:
+            // Phraseboard uses CSS custom properties (--rowHighlight, --columnHighlight)
+            // with named color values from HIGHLIGHT_COLORS, not an index-based system.
+            // HighlightRenderer inheritance is skipped — fundamentally different approach.
+        });
+
+        // Apply initial Phase 2 settings
+        var initSettings = window.NarbeScanManager.getSettings();
+        if (typeof initSettings.longPressThreshold === 'number' && initSettings.longPressThreshold > 0) {
+            state.longPressThreshold = initSettings.longPressThreshold;
+        }
     }
     
     // Apply loaded settings to CSS/DOM

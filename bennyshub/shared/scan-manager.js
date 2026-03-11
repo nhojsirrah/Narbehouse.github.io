@@ -15,7 +15,12 @@ window.NarbeScanManager = (function() {
   // Default settings
   const DEFAULT_SETTINGS = {
     autoScan: false,   // Default per agents.md (Off for Ben games)
-    scanSpeedIndex: 1  // Default to 2000ms (index 1)
+    scanSpeedIndex: 1, // Default to 2000ms (index 1)
+    // Phase 2 shared settings
+    longPressThreshold: 3000,        // ms - shared long-press threshold for backward scan
+    sharedThemeIndex: 0,             // Index into each app's theme array
+    sharedHighlightColorIndex: 0,    // Index into each app's highlight color array
+    sharedHighlightStyle: 'outline'  // 'outline' | 'fill' | etc.
   };
 
   // Internal state
@@ -76,7 +81,12 @@ window.NarbeScanManager = (function() {
     return {
       autoScan: settings.autoScan,
       scanSpeedIndex: settings.scanSpeedIndex,
-      scanInterval: SCAN_SPEEDS[settings.scanSpeedIndex]
+      scanInterval: SCAN_SPEEDS[settings.scanSpeedIndex],
+      // Phase 2 shared settings
+      longPressThreshold: settings.longPressThreshold,
+      sharedThemeIndex: settings.sharedThemeIndex,
+      sharedHighlightColorIndex: settings.sharedHighlightColorIndex,
+      sharedHighlightStyle: settings.sharedHighlightStyle
     };
   }
 
@@ -216,13 +226,31 @@ window.NarbeScanManager = (function() {
         changed = true;
       }
       
-      if (typeof newSettings.scanSpeedIndex === 'number' && 
-          newSettings.scanSpeedIndex >= 0 && 
+      if (typeof newSettings.scanSpeedIndex === 'number' &&
+          newSettings.scanSpeedIndex >= 0 &&
           newSettings.scanSpeedIndex < SCAN_SPEEDS.length) {
         settings.scanSpeedIndex = newSettings.scanSpeedIndex;
         changed = true;
       }
-      
+
+      // Phase 2 shared settings
+      if (typeof newSettings.longPressThreshold === 'number' && newSettings.longPressThreshold > 0) {
+        settings.longPressThreshold = newSettings.longPressThreshold;
+        changed = true;
+      }
+      if (typeof newSettings.sharedThemeIndex === 'number' && newSettings.sharedThemeIndex >= 0) {
+        settings.sharedThemeIndex = newSettings.sharedThemeIndex;
+        changed = true;
+      }
+      if (typeof newSettings.sharedHighlightColorIndex === 'number' && newSettings.sharedHighlightColorIndex >= 0) {
+        settings.sharedHighlightColorIndex = newSettings.sharedHighlightColorIndex;
+        changed = true;
+      }
+      if (typeof newSettings.sharedHighlightStyle === 'string') {
+        settings.sharedHighlightStyle = newSettings.sharedHighlightStyle;
+        changed = true;
+      }
+
       if (changed) {
         saveSettings();
       }

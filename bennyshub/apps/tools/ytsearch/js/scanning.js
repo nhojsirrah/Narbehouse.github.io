@@ -10,10 +10,13 @@ class ScanningManager {
         // Timing configuration
         this.SHORT_MIN = 30; // Reduced for responsiveness (was 250)
         this.SHORT_MAX = 3000;
-        this.SCAN_BACK_MS = 2500;
-        this.ENTER_HOLD_MS = 3000;
+        // Space long-press: inherit from NarbeScanManager (Phase 2).
+        // NOTE: YTSearch previously used 2500ms for faster search scanning.
+        // Now defaults to shared longPressThreshold (3000ms) for consistency.
+        this.SCAN_BACK_MS = this._getSharedLongPressThreshold();
+        this.ENTER_HOLD_MS = 3000; // Enter long-press kept at 3000ms (YTSearch-specific)
         this.INPUT_COOLDOWN_MS = 200; // Reduced for responsiveness
-        
+
         // Auto scan configuration
         this.updateSettingsFromManager();
 
@@ -58,20 +61,42 @@ class ScanningManager {
         this.init();
     }
 
+    /**
+     * Get shared longPressThreshold from NarbeScanManager (Phase 2).
+     * Falls back to 3000ms (the previous YTSearch enterLongPressThreshold).
+     * NOTE: YTSearch originally used 2500ms for SCAN_BACK_MS.
+     */
+    _getSharedLongPressThreshold() {
+        if (typeof NarbeScanManager !== 'undefined') {
+            const s = NarbeScanManager.getSettings();
+            if (typeof s.longPressThreshold === 'number' && s.longPressThreshold > 0) {
+                return s.longPressThreshold;
+            }
+        }
+        return 3000;
+    }
+
     updateSettingsFromManager() {
         if (typeof NarbeScanManager !== 'undefined') {
             const s = NarbeScanManager.getSettings();
             this.autoScanEnabled = s.autoScan;
             const interval = NarbeScanManager.getScanInterval();
             this.currentScanInterval = (typeof interval === 'number' && interval > 0) ? interval : 2000;
-            
+
+            // Phase 2: sync Space long-press threshold from shared settings
+            // NOTE: YTSearch previously used 2500ms; now inherits shared value.
+            // ENTER_HOLD_MS (3000ms) is kept as-is — YTSearch-specific.
+            if (typeof s.longPressThreshold === 'number' && s.longPressThreshold > 0) {
+                this.SCAN_BACK_MS = s.longPressThreshold;
+            }
+
             // Map for legacy UI
             if (interval === 3000) this.scanSpeed = 'slow';
             else if (interval === 2000) this.scanSpeed = 'medium';
             else if (interval === 1000) this.scanSpeed = 'fast';
             else this.scanSpeed = 'medium';
         } else {
-            this.autoScanEnabled = false; 
+            this.autoScanEnabled = false;
             this.currentScanInterval = 2000;
             this.scanSpeed = 'medium';
         }
