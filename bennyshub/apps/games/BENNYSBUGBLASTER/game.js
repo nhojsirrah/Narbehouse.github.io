@@ -3778,12 +3778,31 @@ function selectAction() {
 }
 
 
+// Helper: returns true when gameState is a menu/UI state (not gameplay)
+function _isMenuState() {
+    return ['MENU', 'INSTRUCTIONS', 'PAUSED', 'SETTINGS', 'BUY', 'CONFIRM_EXIT'].indexOf(gameState) !== -1;
+}
+
+// --- Menu input via shared NarbeSwitchInput (Phase 1 Tier 3 partial) ---
+var menuSwitchInput = new NarbeSwitchInput({
+    longPressThreshold: 3000,
+    enterLongPressThreshold: 0, // no pause via Enter in menus
+    repeatInterval: 2000,
+    shouldHandle: function() { return _isMenuState(); },
+    onScanForward: function() { scanForward(); },
+    onScanBackward: function() { scanBackward(); },
+    onSelect: function() { selectAction(); }
+});
+
 window.addEventListener('keydown', (e) => {
     startMusic();
-    
+
     if(["Space","ArrowUp","ArrowDown","ArrowLeft","ArrowRight"].indexOf(e.code) > -1) {
         e.preventDefault();
     }
+
+    // Menu-state Space/Enter is handled by NarbeSwitchInput
+    if (_isMenuState() && (e.code === 'Space' || e.code === 'Enter')) return;
 
     if (!keysPressed[e.code]) {
         keysPressed[e.code] = true;
@@ -3792,15 +3811,18 @@ window.addEventListener('keydown', (e) => {
 });
 
 window.addEventListener('keyup', (e) => {
+    // Menu-state Space/Enter is handled by NarbeSwitchInput
+    if (_isMenuState() && (e.code === 'Space' || e.code === 'Enter')) return;
+
     let duration = Date.now() - keyTimers[e.code];
     keysPressed[e.code] = false;
-    
+
     if (e.code === 'Space') {
         if (duration < 3000) {
             scanForward(); // Back to Forward on Tap
         }
     }
-    
+
     if (e.code === 'Enter') {
         if (duration < 6000) {
             selectAction();
@@ -3809,19 +3831,20 @@ window.addEventListener('keyup', (e) => {
 });
 
 // Input Loop Check (run effectively every frame via main loop)
+// Menu-state Space/Enter long-press is handled by NarbeSwitchInput;
+// this function only handles PLAYING-state holds.
 function checkInputHolds() {
     let now = Date.now();
-    
-    // Space Hold Logic -> Scan Backward
-    if (keysPressed['Space']) {
+
+    // Space Hold Logic -> cycle stomp target (PLAYING only)
+    if (keysPressed['Space'] && gameState === 'PLAYING') {
         let duration = now - keyTimers['Space'];
         if (duration > 3000) {
             if (!keysPressed['Space_LastScan']) keysPressed['Space_LastScan'] = now;
-            
-            let interval = (gameState === 'PLAYING') ? 500 : 2000;
+
+            let interval = 500;
             if (now - keysPressed['Space_LastScan'] >= interval) {
-                if (gameState === 'PLAYING') cycle_stomp_target();
-                else scanBackward(); // REVERSE SCAN
+                cycle_stomp_target();
                 keysPressed['Space_LastScan'] = now;
             }
         } else {
@@ -3830,8 +3853,8 @@ function checkInputHolds() {
     } else {
         delete keysPressed['Space_LastScan'];
     }
-    
-    // Enter Hold Logic
+
+    // Enter Hold Logic -> pause (PLAYING only)
     if (keysPressed['Enter']) {
         let duration = now - keyTimers['Enter'];
         if (gameState === 'PLAYING') {

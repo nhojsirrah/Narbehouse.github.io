@@ -275,6 +275,8 @@
     <script src="../../../shared/voice-manager.js"></script>
     <script src="../../../shared/ios-audio-fix.js"></script>
     <script src="../../../shared/scan-manager.js"></script>
+    <script src="../../../shared/switch-input.js"></script>
+    <script src="../../../shared/scan-engine.js"></script>
     <script>
         
         // --- Game Settings Manager ---
@@ -1322,8 +1324,8 @@
                 this.enterPressed = false;
                 this.enterPressTime = 0;
                 
-                this.spaceLongPressTimer = null;
-                this.spaceRepeatTimer = null;
+                // spaceLongPressTimer and spaceRepeatTimer removed: menu scanning
+                // is now handled by shared NarbeSwitchInput
                 this.enterLongPressTimer = null;
 
                 window.addEventListener('keydown', (e) => this.handleKeyDown(e));
@@ -1441,80 +1443,71 @@
 
             handleKeyDown(e) {
                 if (e.repeat) return;
-                
+
                 // Ensure audio context is running
                 if (audio.ctx && audio.ctx.state === 'suspended') audio.ctx.resume();
                 if (!audio.ctx) audio.init();
 
+                // Menu-state Space/Enter is handled by NarbeSwitchInput
+                if (gameState === 'MENU' || gameState === 'PAUSED') return;
+
                 if (e.code === 'Space') {
                     this.spacePressed = true;
                     this.spacePressTime = Date.now();
-                    
-                    if (gameState === 'MENU' || gameState === 'PAUSED') {
-                        // Start timer for Long Press detection (3s)
-                        this.spaceLongPressTimer = setTimeout(() => {
-                            this.startBackwardScan();
-                        }, 3000);
-                    } else if (gameState === 'AIMING' || gameState === 'CHARGING') {
+
+                    if (gameState === 'AIMING' || gameState === 'CHARGING') {
                         aimActive = true;
-                    } 
+                    }
                 }
 
                 if (e.code === 'Enter') {
                     this.enterPressed = true;
                     this.enterPressTime = Date.now();
                     this.longPressTriggered = false; // Reset trigger
-                    
+
                     if (gameState === 'AIMING') {
                         // If AutoScan is ON, pressing Enter acts as "Stop Aim" and "Start Charge"
                         // Or if standard, it just transitions.
                         // Standard logic: Space=Aim (Hold), Enter=Charge (Hold).
                         // AutoScan logic: Aiming is automatic. Enter Stop Aim & Start Charge.
-                        
+
                         // Wait, previous logic for AIMING->CHARGING was handled in Enter handling?
                         // No. Previous logic:
                         // Space KEYDOWN: Aim Active.
                         // Space KEYUP: Aim Stop.
                         // Enter KEYDOWN: If Aiming -> Start Pause Timer, Change to Charging.
-                        
+
                         // New Logic must support Single Button Mode for Auto Scan.
                         // If AutoScan: Aim is oscillating automatically.
                         // Press Enter: Lock Aim, Start Charging immediately.
-                        
+
                         this.enterLongPressTimer = setTimeout(() => {
                             if (gameState !== 'PAUSED' && gameState !== 'MENU') {
                                 this.longPressTriggered = true; // Mark as consumed
                                 MenuManager.togglePause();
                             }
                         }, 10000); // 10 seconds hold to pause
-                        
+
                         gameState = 'CHARGING';
                         document.getElementById('instructions').innerHTML = "<p>Hold <strong>ENTER</strong> to Charge</p><p>Release to Shoot</p>";
                         document.getElementById('power-container').style.display = 'block';
                         chargePower = 0;
                         lastChargeBeep = 0;
-                        
-                    } else if (gameState === 'CHARGING') { 
+
+                    } else if (gameState === 'CHARGING') {
                         // Already charging, handled in loop
-                    } else if (gameState === 'MENU' || gameState === 'PAUSED') {
-                        // Visual feedback on down press
                     }
                 }
             }
 
             handleKeyUp(e) {
+                // Menu-state Space/Enter is handled by NarbeSwitchInput
+                if (gameState === 'MENU' || gameState === 'PAUSED') return;
+
                 if (e.code === 'Space') {
                     this.spacePressed = false;
-                    clearTimeout(this.spaceLongPressTimer);
-                    this.stopBackwardScan();
-                    
-                    const duration = Date.now() - this.spacePressTime;
-                    
-                    if (gameState === 'MENU' || gameState === 'PAUSED') {
-                        if (duration < 3000) {
-                            MenuManager.scanNext();
-                        }
-                    } else if (gameState === 'AIMING' || gameState === 'CHARGING') {
+
+                    if (gameState === 'AIMING' || gameState === 'CHARGING') {
                         aimActive = false;
                         // aimDirection reverses on release (Manual toggle)
                         aimDirection *= -1;
@@ -1524,7 +1517,7 @@
                 if (e.code === 'Enter') {
                     this.enterPressed = false;
                     clearTimeout(this.enterLongPressTimer); // Cancel pause timer
-                    
+
                     // If long press triggered pause, do not shoot or select
                     if (this.longPressTriggered) {
                         this.longPressTriggered = false;
@@ -1532,31 +1525,12 @@
                     }
 
                     if (gameState === 'CHARGING') {
-                        // shootBall();
                         // Only shoot if game is still running (timer didn't switch it)
                         shootBall();
-                    } else if (gameState === 'MENU' || gameState === 'PAUSED') {
-                        MenuManager.selectCurrent();
                     }
                 }
             }
 
-            startBackwardScan() {
-                // Initial backward step
-                MenuManager.scanPrev();
-                // Repeat based on shared Scan Manager setting
-                const interval = window.NarbeScanManager ? window.NarbeScanManager.getScanInterval() : 2000;
-                this.spaceRepeatTimer = setInterval(() => {
-                    MenuManager.scanPrev();
-                }, interval);
-            }
-
-            stopBackwardScan() {
-                if (this.spaceRepeatTimer) {
-                    clearInterval(this.spaceRepeatTimer);
-                    this.spaceRepeatTimer = null;
-                }
-            }
         }
 
         // Helper to get element by id safely
@@ -1950,8 +1924,18 @@
         const MenuManager = new MenuSystem();
         const Input = new InputHandler();
 
-        // --- Removed old key listeners ---
-        // (Cleaned up in this replacement)
+        // --- Menu input via shared NarbeSwitchInput (Phase 1 Tier 3 partial) ---
+        const menuSwitchInput = new NarbeSwitchInput({
+            longPressThreshold: 3000,
+            enterLongPressThreshold: 0, // no pause via Enter in menus
+            repeatInterval: window.NarbeScanManager ? window.NarbeScanManager.getScanInterval() : 2000,
+            shouldHandle: function() { return gameState === 'MENU' || gameState === 'PAUSED'; },
+            onScanForward: function() { MenuManager.scanNext(); MenuManager.startAutoScan(); },
+            onScanBackwardStart: function() { MenuManager.stopAutoScan(); },
+            onScanBackward: function() { MenuManager.scanPrev(); },
+            onScanBackwardStop: function() { MenuManager.startAutoScan(); },
+            onSelect: function() { MenuManager.selectCurrent(); }
+        });
 
         function shootBall() {
             gameState = 'SHOOTING';
