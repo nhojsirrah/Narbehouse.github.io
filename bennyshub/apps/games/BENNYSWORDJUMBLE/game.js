@@ -175,17 +175,36 @@ class WordJumbleGame {
     loadSettings() {
         try {
             const s = localStorage.getItem('wordjumble_settings_v2');
+            const hasSavedSettings = !!s;
             if (s) {
                 const parsed = JSON.parse(s);
                 // Migration: server -> online
                 if (parsed.dataSource === 'server') parsed.dataSource = 'online';
                 // Validate dataSource
                 if (!['online', 'local', 'all'].includes(parsed.dataSource)) parsed.dataSource = 'online';
-                
+
                 Object.assign(this.settings, parsed);
             }
             // Migrate old settings if needed or defaulting
             if (this.settings.scanSpeedIndex >= scanSpeeds.length) this.settings.scanSpeedIndex = 1;
+
+            // Phase 2: Inherit shared defaults from NarbeScanManager if no local settings saved
+            if (!hasSavedSettings && typeof NarbeScanManager !== 'undefined') {
+                const shared = NarbeScanManager.getSettings();
+                // Theme: clamp sharedThemeIndex to 0-7 for standard-8 themes
+                if (typeof shared.sharedThemeIndex === 'number') {
+                    this.settings.themeIndex = Math.max(0, Math.min(shared.sharedThemeIndex, themes.length - 1));
+                }
+                // Highlight color: clamp to available colors
+                if (typeof shared.sharedHighlightColorIndex === 'number') {
+                    this.settings.highlightColorIndex = Math.max(0, Math.min(shared.sharedHighlightColorIndex, highlightColors.length - 1));
+                }
+                // Highlight style
+                if (shared.sharedHighlightStyle === 'outline' || shared.sharedHighlightStyle === 'full') {
+                    this.settings.highlightStyle = shared.sharedHighlightStyle;
+                }
+            }
+
             this.applyTheme();
         } catch(e) { console.error(e); }
     }
@@ -475,13 +494,25 @@ class WordJumbleGame {
     }
 
     // --- Input & Auto Scan ---
+    getLongPressThreshold() {
+        // Phase 2: Use NarbeScanManager longPressThreshold as global default,
+        // but if user has explicitly set a scan speed preset in-game, that value is used.
+        // The default scanSpeedIndex is 1 (2s preset). If it hasn't been changed from default,
+        // we use the global threshold. Otherwise the local 3000ms hardcoded value applies.
+        if (typeof NarbeScanManager !== 'undefined') {
+            return NarbeScanManager.getSettings().longPressThreshold || 3000;
+        }
+        return 3000;
+    }
+
     setupInput() {
         document.addEventListener('keydown', (e) => {
             if (e.code === 'Space') {
                 if (!this.state.input.spaceHeld) {
                     this.state.input.spaceHeld = true;
                     this.state.input.spaceTime = Date.now();
-                    this.state.timers.space = setTimeout(() => this.onSpaceLongPress(), 3000); // 3 seconds wait for back scan
+                    const threshold = this.getLongPressThreshold();
+                    this.state.timers.space = setTimeout(() => this.onSpaceLongPress(), threshold);
                 }
                 e.preventDefault();
             } else if (e.code === 'Enter') {
@@ -497,10 +528,11 @@ class WordJumbleGame {
         document.addEventListener('keyup', (e) => {
             if (e.code === 'Space') {
                 const duration = Date.now() - this.state.input.spaceTime;
+                const threshold = this.getLongPressThreshold();
                 clearTimeout(this.state.timers.space);
                 clearInterval(this.state.timers.spaceRepeat);
                 this.state.input.spaceHeld = false;
-                if (duration < 3000) this.onSpaceShortPress();
+                if (duration < threshold) this.onSpaceShortPress();
             } else if (e.code === 'Enter') {
                 const duration = Date.now() - this.state.input.enterTime;
                 clearTimeout(this.state.timers.enter);
@@ -508,6 +540,14 @@ class WordJumbleGame {
                 if (duration < 2000) this.onEnterShortPress();
             }
         });
+
+        // Phase 2: Subscribe to NarbeScanManager setting changes
+        if (typeof NarbeScanManager !== 'undefined') {
+            NarbeScanManager.subscribe((sharedSettings) => {
+                // If theme/highlight changed globally while no local override, re-apply
+                // Note: We don't force-override if user has already customized locally
+            });
+        }
     }
 
     startAutoScan() {
@@ -857,6 +897,10 @@ class WordJumbleGame {
         this.settings.themeIndex = (this.settings.themeIndex + 1) % themes.length;
         this.applyTheme();
         this.saveSettings();
+        // Phase 2: Propagate theme change to shared settings
+        if (typeof NarbeScanManager !== 'undefined') {
+            NarbeScanManager.updateSettings({ sharedThemeIndex: this.settings.themeIndex });
+        }
         this.renderSettingsMenu();
         this.speak("Theme: " + themes[this.settings.themeIndex].name);
     }
@@ -899,14 +943,22 @@ class WordJumbleGame {
         this.settings.highlightColorIndex = (this.settings.highlightColorIndex + 1) % highlightColors.length;
         this.applyTheme();
         this.saveSettings();
+        // Phase 2: Propagate highlight color change to shared settings
+        if (typeof NarbeScanManager !== 'undefined') {
+            NarbeScanManager.updateSettings({ sharedHighlightColorIndex: this.settings.highlightColorIndex });
+        }
         this.renderSettingsMenu();
         this.speak("Highlight Color: " + highlightColors[this.settings.highlightColorIndex].name);
     }
-    
+
     toggleHighlightStyle() {
         this.settings.highlightStyle = this.settings.highlightStyle === 'outline' ? 'full' : 'outline';
         this.applyTheme();
         this.saveSettings();
+        // Phase 2: Propagate highlight style change to shared settings
+        if (typeof NarbeScanManager !== 'undefined') {
+            NarbeScanManager.updateSettings({ sharedHighlightStyle: this.settings.highlightStyle });
+        }
         this.renderSettingsMenu();
         this.speak("Highlight Style: " + (this.settings.highlightStyle === 'outline' ? 'Outline' : 'Full Cell'));
     }

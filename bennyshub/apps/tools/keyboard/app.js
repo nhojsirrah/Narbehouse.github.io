@@ -15,15 +15,37 @@
 
   let settings = loadSettings();
   function loadSettings() {
-    try { 
-      const v = JSON.parse(localStorage.getItem("kb_settings")); 
+    let merged;
+    let hasSavedSettings = false;
+    try {
+      const v = JSON.parse(localStorage.getItem("kb_settings"));
       // Remove voiceIndex from keyboard settings as it's now handled by voice manager
       if (v && 'voiceIndex' in v) delete v.voiceIndex;
-      return { ...defaultSettings, ...v }; 
+      hasSavedSettings = !!v;
+      merged = { ...defaultSettings, ...v };
     }
-    catch { 
-      return { ...defaultSettings }; 
+    catch {
+      merged = { ...defaultSettings };
     }
+
+    // Phase 2: Inherit shared defaults from NarbeScanManager when no local settings saved
+    if (!hasSavedSettings && typeof NarbeScanManager !== 'undefined') {
+      try {
+        const shared = NarbeScanManager.getSettings();
+        // Theme: map sharedThemeIndex to keyboard's 8 CSS themes by index
+        if (typeof shared.sharedThemeIndex === 'number' && shared.sharedThemeIndex >= 0 && shared.sharedThemeIndex < themes.length) {
+          merged.theme = themes[shared.sharedThemeIndex];
+        }
+        // Highlight color: map sharedHighlightColorIndex to keyboard's 8 highlight colors by index
+        if (typeof shared.sharedHighlightColorIndex === 'number' && shared.sharedHighlightColorIndex >= 0 && shared.sharedHighlightColorIndex < highlightColors.length) {
+          merged.highlightColor = highlightColors[shared.sharedHighlightColorIndex];
+        }
+      } catch (e) {
+        console.warn('Keyboard: Error inheriting shared settings:', e);
+      }
+    }
+
+    return merged;
   }
   function saveSettings() {
     localStorage.setItem("kb_settings", JSON.stringify(settings));
@@ -91,9 +113,11 @@
   }
 
   // Scan timing configuration
+  // Phase 2: Use NarbeScanManager longPressThreshold as the medium preset default
+  const sharedLongPress = (typeof NarbeScanManager !== 'undefined' && NarbeScanManager.getSettings().longPressThreshold) || 2000;
   const scanSpeeds = {
     slow: { forward: 1500, backward: 3000, longPress: 2000 },
-    medium: { forward: 1000, backward: 2000, longPress: 2000 },
+    medium: { forward: 1000, backward: 2000, longPress: sharedLongPress },
     fast: { forward: 500, backward: 1000, longPress: 2000 }
   };
 
@@ -814,6 +838,10 @@
     currentThemeIndex = (currentThemeIndex + 1) % themes.length;
     const newTheme = themes[currentThemeIndex];
     applyTheme(newTheme);
+    // Phase 2: Propagate theme change to shared settings
+    if (typeof NarbeScanManager !== 'undefined') {
+      NarbeScanManager.updateSettings({ sharedThemeIndex: currentThemeIndex });
+    }
     speak(newTheme);
   }
 
@@ -889,6 +917,10 @@
     currentHighlightIndex = (currentHighlightIndex + 1) % highlightColors.length;
     const newColor = highlightColors[currentHighlightIndex];
     applyHighlightColor(newColor);
+    // Phase 2: Propagate highlight color change to shared settings
+    if (typeof NarbeScanManager !== 'undefined') {
+      NarbeScanManager.updateSettings({ sharedHighlightColorIndex: currentHighlightIndex });
+    }
     speak(newColor);
   }
 
@@ -1113,20 +1145,28 @@
       updateVoiceDisplay();
       updateTTSToggleDisplay();
     });
-    
+
     // Listen for voice settings changes from other apps
     window.NarbeVoiceManager.onSettingsChange(() => {
       updateVoiceDisplay();
       updateTTSToggleDisplay();
     });
-    
+
     applyTheme(settings.theme);
     applyHighlightColor(settings.highlightColor || "yellow");
     currentScanSpeed = settings.scanSpeed || "medium";
-    
+
     if (typeof NarbeScanManager !== 'undefined') {
         const mgrSettings = NarbeScanManager.getSettings();
         isAutoScanning = mgrSettings.autoScan;
+
+        // Phase 2: Subscribe to shared settings changes
+        NarbeScanManager.subscribe((sharedSettings) => {
+            // Update medium longPress threshold dynamically
+            if (sharedSettings.longPressThreshold) {
+                scanSpeeds.medium.longPress = sharedSettings.longPressThreshold;
+            }
+        });
     } else {
         isAutoScanning = settings.autoScan;
     }
@@ -1134,7 +1174,7 @@
     renderKeyboard();
     setBuffer("");
     setTimeout(() => renderPredictions(), 100);
-    
+
     if (isAutoScanning) {
       startAutoScan();
     }

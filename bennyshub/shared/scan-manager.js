@@ -15,7 +15,12 @@ window.NarbeScanManager = (function() {
   // Default settings
   const DEFAULT_SETTINGS = {
     autoScan: false,   // Default per agents.md (Off for Ben games)
-    scanSpeedIndex: 1  // Default to 2000ms (index 1)
+    scanSpeedIndex: 1, // Default to 2000ms (index 1)
+    // Phase 2 shared settings
+    longPressThreshold: 3000,        // ms - global default for long-press detection
+    sharedThemeIndex: 0,             // default theme index (0-7 for standard-8)
+    sharedHighlightColorIndex: 0,    // default highlight color index
+    sharedHighlightStyle: 'outline'  // 'outline' or 'full'
   };
 
   // Internal state
@@ -76,7 +81,12 @@ window.NarbeScanManager = (function() {
     return {
       autoScan: settings.autoScan,
       scanSpeedIndex: settings.scanSpeedIndex,
-      scanInterval: SCAN_SPEEDS[settings.scanSpeedIndex]
+      scanInterval: SCAN_SPEEDS[settings.scanSpeedIndex],
+      // Phase 2 shared settings
+      longPressThreshold: settings.longPressThreshold,
+      sharedThemeIndex: settings.sharedThemeIndex,
+      sharedHighlightColorIndex: settings.sharedHighlightColorIndex,
+      sharedHighlightStyle: settings.sharedHighlightStyle
     };
   }
 
@@ -208,21 +218,43 @@ window.NarbeScanManager = (function() {
      */
     updateSettings: function(newSettings) {
       if (!newSettings) return;
-      
+
       let changed = false;
-      
+
       if (typeof newSettings.autoScan === 'boolean') {
         settings.autoScan = newSettings.autoScan;
         changed = true;
       }
-      
-      if (typeof newSettings.scanSpeedIndex === 'number' && 
-          newSettings.scanSpeedIndex >= 0 && 
+
+      if (typeof newSettings.scanSpeedIndex === 'number' &&
+          newSettings.scanSpeedIndex >= 0 &&
           newSettings.scanSpeedIndex < SCAN_SPEEDS.length) {
         settings.scanSpeedIndex = newSettings.scanSpeedIndex;
         changed = true;
       }
-      
+
+      // Phase 2 shared settings
+      if (typeof newSettings.longPressThreshold === 'number' && newSettings.longPressThreshold > 0) {
+        settings.longPressThreshold = newSettings.longPressThreshold;
+        changed = true;
+      }
+
+      if (typeof newSettings.sharedThemeIndex === 'number' && newSettings.sharedThemeIndex >= 0) {
+        settings.sharedThemeIndex = newSettings.sharedThemeIndex;
+        changed = true;
+      }
+
+      if (typeof newSettings.sharedHighlightColorIndex === 'number' && newSettings.sharedHighlightColorIndex >= 0) {
+        settings.sharedHighlightColorIndex = newSettings.sharedHighlightColorIndex;
+        changed = true;
+      }
+
+      if (typeof newSettings.sharedHighlightStyle === 'string' &&
+          (newSettings.sharedHighlightStyle === 'outline' || newSettings.sharedHighlightStyle === 'full')) {
+        settings.sharedHighlightStyle = newSettings.sharedHighlightStyle;
+        changed = true;
+      }
+
       if (changed) {
         saveSettings();
       }
