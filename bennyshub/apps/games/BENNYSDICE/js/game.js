@@ -14,7 +14,7 @@ window.appState = {
     isRolling: false // True during dice roll animation
 };
 
-// --- Input State for Backward Scan (managed by NarbeSwitchInput) ---
+// --- Input State for Backward Scan ---
 const inputState = {
     spaceHeld: false,
     spaceTime: 0,
@@ -23,9 +23,6 @@ const inputState = {
 };
 // Expose for debugging
 window.inputState = inputState;
-
-// --- Shared Module: SwitchInput ---
-let switchInput = null; // Initialized after scan engine setup
 
 // Game settings (persisted) - only for local settings, shared settings use managers
 const gameSettings = {
@@ -223,24 +220,53 @@ function updateSettingsUI() {
     if (soundEl) soundEl.textContent = gameSettings.sound ? 'On' : 'Off';
 }
 
-// --- Auto Scan Integration (via NarbeLinearScan) ---
-let scanEngine = null; // Initialized after getFocusables/refreshScanFocus are defined
+// --- Auto Scan Integration ---
+let autoScanTimer = null;
 
-// Subscribe to scan manager changes for settings UI updates
+function startAutoScan() {
+    stopAutoScan();
+    if (!window.NarbeScanManager) return;
+    const scanSettings = window.NarbeScanManager.getSettings();
+    if (!scanSettings.autoScan) return;
+
+    autoScanTimer = setInterval(() => {
+        // Pause auto scanning while user holds input
+        if (inputState.spaceHeld) return;
+
+        moveScan(1);
+    }, scanSettings.scanInterval);
+}
+
+function stopAutoScan() {
+    if (autoScanTimer) {
+        clearInterval(autoScanTimer);
+        autoScanTimer = null;
+    }
+}
+
+// Subscribe to scan manager changes
 if (window.NarbeScanManager) {
-    window.NarbeScanManager.subscribe(() => {
-        // Restart auto-scan with new speed if running
-        if (scanEngine && window.NarbeScanManager.getSettings().autoScan) {
-            scanEngine.startAutoScan();
-        } else if (scanEngine) {
-            scanEngine.stopAutoScan();
+    // Read initial long-press threshold
+    const initSettings = window.NarbeScanManager.getSettings();
+    if (typeof initSettings.longPressThreshold === 'number' && initSettings.longPressThreshold > 0) {
+        inputState.config.longPress = initSettings.longPressThreshold;
+    }
+    window.NarbeScanManager.subscribe((s) => {
+        // Phase 2: sync long-press threshold
+        if (typeof s.longPressThreshold === 'number' && s.longPressThreshold > 0) {
+            inputState.config.longPress = s.longPressThreshold;
         }
-        // Update backward scan repeat interval to match scan speed (original behavior)
-        if (switchInput) {
-            switchInput.setThresholds({ repeatInterval: window.NarbeScanManager.getScanInterval() });
+        if (s.autoScan) {
+            startAutoScan();
+        } else {
+            stopAutoScan();
         }
         updateSettingsUI();
     });
+    // Initial check
+    if (initSettings.autoScan) {
+        startAutoScan();
+    }
 }
 
 // --- Setup Scene ---
@@ -1165,7 +1191,6 @@ function setAppState(newState) {
 
     // Reset scan Index whenever we change screens
     appState.scanIndex = 0;
-    if (scanEngine) scanEngine.setIndex(0);
 
     if (newState === 'MENU') {
         // STOP GAME AND RESET
@@ -1473,10 +1498,7 @@ function refreshScanFocus(shouldSpeak = true) {
 
     if (targets.length === 0) return;
 
-    if (appState.scanIndex >= targets.length) {
-        appState.scanIndex = 0;
-        if (scanEngine) scanEngine.setIndex(0);
-    }
+    if (appState.scanIndex >= targets.length) appState.scanIndex = 0;
 
     const target = targets[appState.scanIndex];
     target.classList.add('focused');
@@ -1550,64 +1572,52 @@ function moveScan(direction) {
     refreshScanFocus();
 }
 
-// --- Shared Module: ScanEngine (NarbeLinearScan) ---
-scanEngine = new NarbeLinearScan({
-    getItems: () => getFocusables(),
-    onFocus: (item, index) => {
-        appState.scanIndex = index;
-        refreshScanFocus();
-    },
-    onSelect: (item, index) => {
-        appState.scanIndex = index;
+function onSpaceShortPress() {
+    moveScan(1);
+}
+
+function onSpaceLongPress() {
+    moveScan(-1); // Move backward immediately
+    // Get speed from manager if available
+    const speed = (window.NarbeScanManager) ? window.NarbeScanManager.getScanInterval() : inputState.config.repeatInterval;
+    inputState.timers.spaceRepeat = setInterval(() => {
+        moveScan(-1);
+    }, speed);
+}
+
+// Input Listener
+window.addEventListener('keydown', (e) => {
+    if (e.code === 'Space') {
+        e.preventDefault();
+        if (!inputState.spaceHeld) {
+            inputState.spaceHeld = true;
+            inputState.spaceTime = Date.now();
+            inputState.timers.space = setTimeout(onSpaceLongPress, inputState.config.longPress);
+        }
+    }
+});
+
+window.addEventListener('keyup', (e) => {
+    if (e.code === 'Space') {
+        e.preventDefault(); 
+        clearTimeout(inputState.timers.space);
+        clearInterval(inputState.timers.spaceRepeat);
+
+        if (inputState.spaceHeld) {
+            const duration = Date.now() - inputState.spaceTime;
+            if (duration < inputState.config.longPress) {
+                onSpaceShortPress();
+            }
+        }
+        inputState.spaceHeld = false;
+    }
+    if (e.code === 'Enter') { 
         activateFocused();
     }
-});
-
-// Sync scanEngine._suppressAutoScan with spaceHeld state
-// (auto-scan pauses while user holds Space, matching original behavior)
-
-// --- Shared Module: SwitchInput (NarbeSwitchInput) ---
-switchInput = new NarbeSwitchInput({
-    longPressThreshold: inputState.config.longPress,     // 3000
-    enterLongPressThreshold: 0,                           // No Enter long-press in this game
-    repeatInterval: (window.NarbeScanManager ? window.NarbeScanManager.getScanInterval() : inputState.config.repeatInterval), // Use scan speed, fallback 2000
-
-    onScanForward: () => {
-        scanEngine.forward();
-        scanEngine.resetAutoScan();
-    },
-    onScanBackwardStart: () => {
-        scanEngine._suppressAutoScan = true;
-    },
-    onScanBackward: () => {
-        scanEngine.backward();
-    },
-    onScanBackwardStop: () => {
-        scanEngine._suppressAutoScan = false;
-        scanEngine.resetAutoScan();
-    },
-    onSelect: () => {
-        scanEngine.select();
-    }
-});
-
-// Keep inputState.spaceHeld in sync for auto-scan suppression (backward compat)
-Object.defineProperty(inputState, 'spaceHeld', {
-    get: () => switchInput ? switchInput.isSpaceHeld() : false,
-    set: () => {} // no-op, managed by NarbeSwitchInput
-});
-
-// Escape key handler (not part of switch input model)
-window.addEventListener('keyup', (e) => {
     if (e.code === 'Escape') {
         if(appState.state === 'GAME') setAppState('MENU');
     }
 });
-
-// Start auto-scan if enabled
-if (window.NarbeScanManager && window.NarbeScanManager.getSettings().autoScan) {
-    scanEngine.startAutoScan();
-}
 
 // Initialize
 
@@ -1635,7 +1645,6 @@ document.body.addEventListener('mousemove', (e) => {
          const idx = focusables.indexOf(target);
          if (idx >= 0 && idx !== appState.scanIndex) {
              appState.scanIndex = idx;
-             if (scanEngine) scanEngine.setIndex(idx);
              refreshScanFocus(false); // Update visual but don't announce constantly
          }
      }
@@ -2116,7 +2125,6 @@ function yarkleRoll() {
 
             // Reset scan index to start at first die
             appState.scanIndex = 0;
-            if (scanEngine) scanEngine.setIndex(0);
 
             // Feature: Auto-Highlight Max Points
             // Logic: Find the best scoring strategy using ALL unlocked dice
@@ -2280,7 +2288,6 @@ function yarkleEndTurn(wasYarkle) {
         } else {
             yarkleState.isPlayerTurn = true;
             appState.scanIndex = 0;
-            if (scanEngine) scanEngine.setIndex(0);
             renderYarkleDice();
             document.getElementById('yarkle-message').textContent = 'Your turn - click ROLL';
             speak(`Your turn! You have ${yarkleState.totalScore} points.`);
@@ -2290,7 +2297,6 @@ function yarkleEndTurn(wasYarkle) {
         // Multiplayer Turn Switch
         yarkleState.currentPlayer = (yarkleState.currentPlayer + 1) % appState.players;
         appState.scanIndex = 0; // Reset scan to start
-        if (scanEngine) scanEngine.setIndex(0);
 
         renderYarkleDice();
 
@@ -2784,7 +2790,6 @@ function fahtzeeRoll() {
 
         // Reset scan index to start at first die
         appState.scanIndex = 0;
-        if (scanEngine) scanEngine.setIndex(0);
 
 
         // Highlight potential scoring dice logic (Simplified Rules)

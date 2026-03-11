@@ -2,7 +2,10 @@ class InputHandler {
     constructor() {
         this.keys = {};
         this.mode = 'MENU'; // 'MENU' or 'GAMEPLAY'
-        
+
+        // Long-press threshold (synced from NarbeScanManager)
+        this.longPressThreshold = 3000;
+
         // State tracking
         // NOTE: All input debouncing is handled by scan-manager.js - do NOT add local debounce
         this.spacePressed = false;
@@ -95,7 +98,7 @@ class InputHandler {
                             this.startBackwardScan();
                         }
                         this.spaceHoldTimeout = null;
-                    }, 3000);
+                    }, this.longPressThreshold);
                 }
             } else {
                 this.trigger('GAME_SPACE_DOWN');
@@ -148,7 +151,7 @@ class InputHandler {
                 const wasBackwardScanning = this.backwardScanInterval !== null;
                 this.stopBackwardScan();
 
-                if (!wasBackwardScanning && duration < 3000) {
+                if (!wasBackwardScanning && duration < this.longPressThreshold) {
                     this.trigger('SCAN_NEXT');
                 }
             } else {
@@ -224,3 +227,16 @@ class InputHandler {
 }
 
 const Input = new InputHandler();
+
+// Phase 2: Sync long-press threshold from NarbeScanManager
+if (typeof window.NarbeScanManager !== 'undefined') {
+    const initSettings = window.NarbeScanManager.getSettings();
+    if (typeof initSettings.longPressThreshold === 'number' && initSettings.longPressThreshold > 0) {
+        Input.longPressThreshold = initSettings.longPressThreshold;
+    }
+    window.NarbeScanManager.subscribe((s) => {
+        if (typeof s.longPressThreshold === 'number' && s.longPressThreshold > 0) {
+            Input.longPressThreshold = s.longPressThreshold;
+        }
+    });
+}

@@ -1020,11 +1020,18 @@ class Game{
     ];
     this.aimerIndex = 0;
 
+    // Long-press threshold (synced from NarbeScanManager)
+    this.longPressThreshold = 3000;
+
     // NEW: Control Mode & Scan Speed
     const sm = window.NarbeScanManager;
     const smSettings = sm ? sm.getSettings() : { autoScan: false, scanSpeedIndex: 1 };
 
-    this.autoScan = smSettings.autoScan; 
+    this.autoScan = smSettings.autoScan;
+    // Phase 2: Read initial long-press threshold
+    if (typeof smSettings.longPressThreshold === 'number' && smSettings.longPressThreshold > 0) {
+        this.longPressThreshold = smSettings.longPressThreshold;
+    }
 
     // Sync with NarbeScanManager speeds
     const rawSpeeds = sm ? sm.getAvailableSpeeds() : [1000, 2000, 3000, 4000];
@@ -1045,6 +1052,10 @@ class Game{
             this.autoScan = newSettings.autoScan;
             if(newSettings.scanSpeedIndex >= 0 && newSettings.scanSpeedIndex < this.scanSpeeds.length){
                 this.scanSpeedIndex = newSettings.scanSpeedIndex;
+            }
+            // Phase 2: sync long-press threshold
+            if (typeof newSettings.longPressThreshold === 'number' && newSettings.longPressThreshold > 0) {
+                this.longPressThreshold = newSettings.longPressThreshold;
             }
         });
     }
@@ -1218,7 +1229,7 @@ class Game{
                  this.backScanActive = true;
                  this._stepMenu(-1);
                  this.backScanInterval = setInterval(()=>this._stepMenu(-1), dur);
-             }, 3000); // 3 seconds hold threshold
+             }, this.longPressThreshold); // synced from NarbeScanManager
           }
       }
       return;
