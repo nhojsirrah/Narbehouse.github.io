@@ -82,21 +82,14 @@ const AudioGraph = {
   _pendingMediaEls: [],
   
   // Lazily create AudioContext on demand (must be from user gesture)
+  // Does NOT force-resume — callers should use NarBeIOSAudio.tryUnlock or AudioGraph.resume()
   getContext() {
     if (this.ac) {
-      // Always try to resume existing context
-      if (this.ac.state === 'suspended') {
-        this.ac.resume().catch(()=>{});
-      }
       return this.ac;
     }
     const AC = window.AudioContext || window.webkitAudioContext;
     if (!AC) return null;
     this.ac = new AC();
-    // Immediately try to resume (ios-audio-fix should also do this, but belt & suspenders)
-    if (this.ac.state === 'suspended') {
-      this.ac.resume().catch(()=>{});
-    }
     // Set up routing
     this.analyser = this.ac.createAnalyser();
     this.analyser.fftSize = 2048;
@@ -130,10 +123,15 @@ const AudioGraph = {
     return this;
   },
   
-  // Resume context if suspended
+  // Resume context if suspended — routes through NarBeIOSAudio.tryUnlock
+  // so we never steal the audio session from TTS
   resume(){
     if (this.ac && this.ac.state === 'suspended') {
-      this.ac.resume().catch(()=>{});
+      if (window.NarBeIOSAudio) {
+        window.NarBeIOSAudio.tryUnlock(this.ac, null);
+      } else {
+        this.ac.resume().catch(()=>{});
+      }
     }
     return Promise.resolve();
   },
@@ -623,13 +621,10 @@ const LevelCatalog = {
 class Sounder{
   constructor(){ this.ac = null; this._throttle = Object.create(null); }
   
-  // Get or create AudioContext lazily
+  // Get or create AudioContext lazily (does NOT force-resume; tryUnlock handles that)
   ctx(){
     if (!this.ac) {
       this.ac = AudioGraph.getContext();
-    }
-    if (this.ac && this.ac.state === 'suspended') {
-      this.ac.resume().catch(()=>{});
     }
     return this.ac;
   }
@@ -713,13 +708,9 @@ class Music {
   }
 
   _ensureNodes(){
-    // Get or create context lazily
+    // Get or create context lazily (does NOT force-resume; tryUnlock handles that)
     this.ac = AudioGraph.getContext();
     if(!this.ac) return false;
-    // Resume if suspended
-    if(this.ac.state === 'suspended') {
-      this.ac.resume().catch(()=>{});
-    }
     if(!this.master){
       this.master = this.ac.createGain();
       this.master.gain.value = 0.28;
@@ -1092,10 +1083,12 @@ class Game{
     document.addEventListener('keyup',(e)=>this.keyUp(e));
     document.addEventListener('pointerdown',(e)=>this.pointerDown(e));
     
-    // iOS CRITICAL: touchstart is required for audio unlock on iOS Safari
+    // iOS: lazily unlock AudioContext on touch, but only if TTS isn't speaking
     document.addEventListener('touchstart', () => {
       if (!AudioGraph.ac) AudioGraph.getContext();
-      AudioGraph.resume();
+      if (AudioGraph.ac && window.NarBeIOSAudio) {
+        window.NarBeIOSAudio.tryUnlock(AudioGraph.ac, null);
+      }
     }, { passive: true });
 
     // Frame timing (set before starting loop to avoid NaN on first frame)
@@ -1190,6 +1183,10 @@ class Game{
   }
 
   keyDown(e){
+    // Lazily unlock AudioContext on key press (defers if TTS is speaking)
+    if (AudioGraph.ac && window.NarBeIOSAudio) {
+      window.NarBeIOSAudio.tryUnlock(AudioGraph.ac, null);
+    }
     // Menus: allow Escape to go back from Custom Games
     if(this.appState !== 'game'){
       if(e.code==='Escape' && this.appState==='games'){
@@ -1626,11 +1623,13 @@ class Game{
   }
 
   pointerDown(e){
-    // iOS audio unlock: create/resume context on first interaction
+    // iOS audio unlock: lazily create/resume context, but defer if TTS is speaking
     if (!AudioGraph.ac) {
       AudioGraph.getContext();
     }
-    AudioGraph.resume();
+    if (AudioGraph.ac && window.NarBeIOSAudio) {
+      window.NarBeIOSAudio.tryUnlock(AudioGraph.ac, null);
+    }
 
     // Menus: allow mouse click selection (press only selects/focuses; release activates)
     const p = this._toGameCoords(e);
