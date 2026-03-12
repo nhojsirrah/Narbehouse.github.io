@@ -41,42 +41,32 @@ const state = {
     menuState: 'main', // main, settings
     gameMode: 'single', // single, two
     gameType: 'checkers', // checkers, chess
-    
-    // Board Representation: 
+
+    // Board Representation:
     // Checkers: 8x8 array. 0 = empty. P1=1/2, P2=-1/-2
     // Chess: Managed by ChessGame instance
-    board: [], 
-    
+    board: [],
+
     turn: 1, // 1/w for Player 1, -1/b for Player 2
-    
+
     // Selection state
     selectedPiece: null, // {r, c}
     availableMoves: [], // List of {r, c, type, capturedPiece}
-    
+
     // Scanning state
     scanIndexV: -1, // Visible Items index (simplified from grid)
     scanItems: [], // List of interactable items currently available
-    
+
     // Menu indices
     menuIndex: 0,
     pauseIndex: 0,
     pauseMenuState: 'main',
-    
+
     // Chess random side
     humanSide: 1, // 1 for White/P1, -1 for Black/P2
     computerSide: -1,
 
-    input: {
-        spaceHeld: false,
-        enterHeld: false,
-        spaceTime: 0,
-        enterTime: 0
-    },
     timers: {
-        space: null,
-        enter: null,
-        autoScan: null,
-        spaceRepeat: null,
         status: null
     }
 };
@@ -95,6 +85,19 @@ const settings = {
     locationTTS: true, // Announce coordinates
     highlightStyle: 'outline' // 'outline' or 'full'
 };
+
+// --- Shared Module Instances (initialized in init()) ---
+let switchInput = null;
+let menuScan = null;        // NarbeLinearScan for menu navigation
+let gameScan = null;         // NarbeLinearScan for game board scanning
+let menuSystem = null;       // NarbeMenuSystem for main menus
+let pauseMenuSystem = null;  // NarbeMenuSystem for pause menus
+let themeProvider = null;    // NarbeThemeProvider
+let highlightRenderer = null; // NarbeHighlightRenderer
+
+// Auto-scan timer (managed manually to match original behavior)
+let autoScanTimer = null;
+
 // --- Sounds ---
 let audioCtx = null;
 function getAudioCtx() {
@@ -109,14 +112,14 @@ window.addEventListener('click', () => { getAudioCtx(); }, { once: true });
 
 function playSound(type) {
     if (!settings.sound) return;
-    
+
     const ctx = getAudioCtx();
     const osc = ctx.createOscillator();
     const gainNode = ctx.createGain();
-    
+
     osc.connect(gainNode);
     gainNode.connect(ctx.destination);
-    
+
     if (type === 'scan') {
         osc.type = 'sine';
         osc.frequency.setValueAtTime(440, ctx.currentTime);
@@ -150,31 +153,191 @@ function playSound(type) {
 
 window.onload = init;
 
+// Phase 2: Track whether user has locally overridden shared settings
+let _hasLocalTheme = false;
+let _hasLocalHighlightColor = false;
+let _hasLocalHighlightStyle = false;
+
 function init() {
     loadSettings();
-    applyTheme();
-    setupInput();
     createDOMStructure();
+
+    // --- Module 5: HighlightRenderer (color/style management) ---
+    highlightRenderer = new NarbeHighlightRenderer({
+        colors: [...highlightColors],
+        defaultColor: highlightColors[0],
+        initialColorIndex: settings.highlightColorIndex,
+        initialStyle: settings.highlightStyle
+    });
+
+    // --- Module 4: ThemeProvider ---
+    themeProvider = new NarbeThemeProvider({
+        themes: themes,
+        initialIndex: settings.themeIndex,
+        applyFn: function(theme) {
+            if (theme) {
+                document.body.style.background = theme.bg;
+                document.body.style.backgroundSize = "cover";
+                document.body.style.backgroundAttachment = "fixed";
+            }
+        }
+    });
+
+    // --- Module 3: MenuSystem (main menus) ---
+    menuSystem = new NarbeMenuSystem({
+        menus: menus,
+        menuContainer: document.getElementById('menu-container'),
+        buttonClass: 'menu-button',
+        gridClass: 'menu-grid',
+        settingsMenus: ['settings'],
+        titleTag: 'div',
+        speak: function(text) { speak(text); }
+    });
+
+    // --- Module 3: MenuSystem (pause menus) ---
+    pauseMenuSystem = new NarbeMenuSystem({
+        menus: {
+            pause: menus.pause,
+            pauseSettings: menus.pauseSettings
+        },
+        menuContainer: document.getElementById('pause-overlay'),
+        buttonClass: 'menu-button',
+        gridClass: 'menu-grid',
+        settingsMenus: ['pauseSettings'],
+        titleTag: 'div',
+        speak: function(text) { speak(text); }
+    });
+
+    // --- Module 2: ScanEngine (linear scan for menus) ---
+    menuScan = new NarbeLinearScan({
+        getItems: function() {
+            if (state.mode === 'pause') {
+                return state.pauseMenuState === 'settings' ? menus.pauseSettings : menus.pause;
+            }
+            return menus[state.menuState] || [];
+        },
+        onFocus: function(item, index) {
+            if (state.mode === 'pause') {
+                state.pauseIndex = index;
+            } else {
+                state.menuIndex = index;
+            }
+            updateHighlights();
+            announceCurrentMenuItem();
+        },
+        onSelect: function(item, index) {
+            if (item && typeof item.action === 'function') {
+                playSound('select');
+                item.action();
+            }
+        },
+        onSelectPrev: function(item, index) {
+            if (item && typeof item.onPrev === 'function') {
+                item.onPrev();
+            }
+        }
+    });
+
+    // --- Module 2: ScanEngine (linear scan for game board) ---
+    gameScan = new NarbeLinearScan({
+        getItems: function() {
+            return state.scanItems;
+        },
+        onFocus: function(item, index) {
+            state.scanIndexV = index;
+            updateGameHighlights();
+            announceCurrentGameItem();
+        },
+        onSelect: function(item, index) {
+            if (!item) return;
+            if (item.type === 'piece') {
+                handleCellClick(item.r, item.c);
+            } else if (item.type === 'move') {
+                executeMove(item.moveData);
+            } else if (item.type === 'cancel') {
+                // Deselect
+                state.selectedPiece = null;
+                state.availableMoves = [];
+                updateGameScanItems();
+                renderBoard();
+                speak("Selection Cancelled.");
+            }
+        }
+    });
+
+    // --- Module 1: SwitchInput ---
+    // Backward scan repeat interval matches scan speed (original used scanSpeeds[scanSpeedIndex].val)
+    var initialRepeatInterval = (window.NarbeScanManager) ?
+        window.NarbeScanManager.getScanInterval() :
+        config.scanSpeeds[settings.scanSpeedIndex].val;
+    switchInput = new NarbeSwitchInput({
+        longPressThreshold: config.longPress,
+        enterLongPressThreshold: config.enterLongPress,
+        repeatInterval: initialRepeatInterval,
+
+        onScanForward: function() {
+            playSound('scan');
+            if (state.mode === 'game') {
+                gameScan.forward();
+            } else if (state.mode === 'menu' || state.mode === 'pause') {
+                menuScan.forward();
+            }
+            resetAutoScan();
+        },
+
+        onScanBackwardStart: function() {
+            // First backward step already happens via onScanBackward
+        },
+
+        onScanBackward: function() {
+            playSound('scan');
+            if (state.mode === 'game') {
+                gameScan.backward();
+            } else if (state.mode === 'menu' || state.mode === 'pause') {
+                menuScan.backward();
+            }
+        },
+
+        onSelect: function() {
+            if (state.mode === 'game') {
+                gameScan.select();
+            } else if (state.mode === 'menu' || state.mode === 'pause') {
+                menuScan.select();
+            }
+        },
+
+        onPause: function() {
+            if (state.mode === 'game') {
+                openPauseMenu();
+            }
+        }
+    });
 
     // Phase 2: Scan Manager Integration for shared settings inheritance
     if (window.NarbeScanManager) {
         // Set initial long-press threshold from shared settings
         // ChessCheckers keeps enterLongPress: 5000 as game-specific override
         config.longPress = window.NarbeScanManager.getSettings().longPressThreshold || config.longPress;
+        switchInput.setThresholds({ longPressThreshold: config.longPress });
 
         window.NarbeScanManager.subscribe((scanState) => {
             // Phase 2: Inherit shared long-press threshold (enterLongPress stays game-specific at 5000)
             config.longPress = scanState.longPressThreshold || config.longPress;
+            switchInput.setThresholds({
+                longPressThreshold: config.longPress,
+                repeatInterval: window.NarbeScanManager.getScanInterval()
+            });
 
             // Phase 2: Inherit shared theme if not locally overridden
             if (!_hasLocalTheme && scanState.sharedThemeIndex !== undefined) {
                 settings.themeIndex = Math.min(scanState.sharedThemeIndex, themes.length - 1);
-                applyTheme();
+                themeProvider.setIndex(settings.themeIndex);
             }
 
             // Phase 2: Inherit shared highlight color if not locally overridden
             if (!_hasLocalHighlightColor && scanState.sharedHighlightColorIndex !== undefined) {
                 settings.highlightColorIndex = Math.min(scanState.sharedHighlightColorIndex, highlightColors.length - 1);
+                highlightRenderer.setColorIndex(settings.highlightColorIndex);
             }
 
             // Phase 2: Inherit shared highlight style if not locally overridden
@@ -192,11 +355,6 @@ function init() {
 
     showMainMenu();
 }
-
-// Phase 2: Track whether user has locally overridden shared settings
-let _hasLocalTheme = false;
-let _hasLocalHighlightColor = false;
-let _hasLocalHighlightStyle = false;
 
 function loadSettings() {
     try {
@@ -257,26 +415,26 @@ function saveSettings() {
 function createDOMStructure() {
     // Similar to Tic Tac Toe but for Checkers
     const mainContent = document.getElementById('main-content');
-    
+
     // Menu
     const menuContainer = document.createElement('div');
     menuContainer.id = 'menu-container';
     menuContainer.className = 'menu-container';
     mainContent.appendChild(menuContainer);
-    
+
     // Game Board
     const gameContainer = document.createElement('div');
     gameContainer.id = 'game-board-container';
     gameContainer.className = 'game-container';
     gameContainer.style.display = 'none';
-    
+
     const board = document.createElement('div');
     board.id = 'checkers-board';
     board.className = 'checkers-board';
     gameContainer.appendChild(board);
-    
+
     mainContent.appendChild(gameContainer);
-    
+
     // Pause Overlay
     const pauseOverlay = document.createElement('div');
     pauseOverlay.id = 'pause-overlay';
@@ -288,7 +446,7 @@ function createDOMStructure() {
     const pauseIcon = document.createElement('div');
     pauseIcon.id = 'pause-button-icon'; // Give it an ID to reference easily
     pauseIcon.className = 'pause-button-icon';
-    pauseIcon.innerHTML = 'll'; 
+    pauseIcon.innerHTML = 'll';
     pauseIcon.title = "Pause Game";
     pauseIcon.style.display = 'none'; // Initially hidden
     pauseIcon.onclick = () => {
@@ -303,14 +461,14 @@ function createDOMStructure() {
 
 const menus = {
     main: [
-        { 
-            text: () => `Game: ${state.gameType.charAt(0).toUpperCase() + state.gameType.slice(1)}`, 
-            action: () => toggleGameType() 
+        {
+            text: () => `Game: ${state.gameType.charAt(0).toUpperCase() + state.gameType.slice(1)}`,
+            action: () => toggleGameType()
         },
         { text: "Single Player", action: () => startGame('single') },
         { text: "Two Player", action: () => startGame('two') },
         { text: "Settings", action: () => showMenu('settings') },
-        { text: "Exit", action: () => { 
+        { text: "Exit", action: () => {
             speak("Exiting to Hub");
             setTimeout(() => {
                 if (window.parent && window.parent !== window) {
@@ -322,12 +480,12 @@ const menus = {
         } }
     ],
     settings: [
-        { 
-            text: () => `TTS: ${window.NarbeVoiceManager ? (window.NarbeVoiceManager.getSettings().ttsEnabled ? 'On' : 'Off') : (settings.tts ? 'On' : 'Off')}`, 
-            action: () => toggleSetting('tts'), 
-            onPrev: () => toggleSetting('tts') 
+        {
+            text: () => `TTS: ${window.NarbeVoiceManager ? (window.NarbeVoiceManager.getSettings().ttsEnabled ? 'On' : 'Off') : (settings.tts ? 'On' : 'Off')}`,
+            action: () => toggleSetting('tts'),
+            onPrev: () => toggleSetting('tts')
         },
-        { 
+        {
             text: () => `Sound: ${settings.sound ? 'On' : 'Off'}`,
             action: () => toggleSetting('sound'),
             onPrev: () => toggleSetting('sound')
@@ -408,7 +566,7 @@ const menus = {
         { text: "Main Menu", action: () => showMainMenu() }
     ],
     // Separate settings menu instance for pause to handle "Back" correctly
-    pauseSettings: [ /* Copy of settings but Back goes to Pause */ ] 
+    pauseSettings: [ /* Copy of settings but Back goes to Pause */ ]
 };
 
 // Fill pauseSettings based on settings logic
@@ -421,7 +579,7 @@ menus.pauseSettings = menus.settings.map(item => {
 function renderMenu(menuName, menuItems, containerId = 'menu-container') {
     const container = document.getElementById(containerId);
     container.innerHTML = '';
-    
+
     // Toggle Layout Class for Settings
     if (menuName === 'settings') {
         container.classList.add('settings-layout');
@@ -433,16 +591,16 @@ function renderMenu(menuName, menuItems, containerId = 'menu-container') {
         container.style.display = 'flex'; // Restore flex
         container.style.flexDirection = 'column';
     }
-    
+
     // Add Title
     const title = document.createElement('div');
     title.className = state.mode === 'menu' ? 'menu-title' : 'pause-title';
-    
+
     if (menuName === 'main') {
         title.innerHTML = `BENNY'S<br>${state.gameType.toUpperCase()}`;
     } else {
         title.innerHTML = menuName === 'settings' ? "SETTINGS" :
-                          menuName === 'pause' ? "PAUSED" : 
+                          menuName === 'pause' ? "PAUSED" :
                           menuName === 'gameover' ? "GAME OVER" : "SETTINGS";
     }
     container.appendChild(title);
@@ -454,18 +612,23 @@ function renderMenu(menuName, menuItems, containerId = 'menu-container') {
         btn.id = `btn-${containerId}-${idx}`;
         const txt = typeof item.text === 'function' ? item.text() : item.text;
         btn.innerHTML = txt;
-        
+
         // Mouse click support
         btn.onclick = () => {
            // Update state index to match clicked button for consistency
-           if (state.mode === 'menu') state.menuIndex = idx;
-           else if (state.mode === 'pause') state.pauseIndex = idx;
+           if (state.mode === 'menu') {
+               state.menuIndex = idx;
+               menuScan.setIndex(idx);
+           } else if (state.mode === 'pause') {
+               state.pauseIndex = idx;
+               menuScan.setIndex(idx);
+           }
            item.action();
         };
 
         container.appendChild(btn);
     });
-    
+
     updateHighlights();
 }
 
@@ -473,19 +636,19 @@ function showMainMenu() {
     state.mode = 'menu';
     state.menuState = 'main';
     state.menuIndex = 0;
-    
+    menuScan.setIndex(0);
+
     document.getElementById('menu-container').style.display = 'flex';
     document.getElementById('game-board-container').style.display = 'none';
     document.getElementById('pause-overlay').style.display = 'none';
-    
+
     // Hide Pause Button in Menu
     const pauseIcon = document.getElementById('pause-button-icon');
     if (pauseIcon) pauseIcon.style.display = 'none';
-    
+
     renderMenu('main', menus.main);
     speak("Benny's Checkers. Single Player.");
-    
-    state.scanItems = menus.main; // For input handling
+
     startAutoScan(); // Will check setting
 }
 
@@ -493,13 +656,13 @@ function showMenu(menuName) {
     state.mode = 'menu';
     state.menuState = menuName;
     state.menuIndex = 0;
-    
+    menuScan.setIndex(0);
+
     // Hide pause button if showing settings from main menu
     const pauseIcon = document.getElementById('pause-button-icon');
     if (pauseIcon) pauseIcon.style.display = 'none';
 
     renderMenu(menuName, menus[menuName]);
-    state.scanItems = menus[menuName];
     announceCurrentMenuItem();
     startAutoScan();
 }
@@ -508,12 +671,12 @@ function openPauseMenu() {
     state.mode = 'pause';
     state.pauseMenuState = 'main';
     state.pauseIndex = 0;
-    
+    menuScan.setIndex(0);
+
     const ov = document.getElementById('pause-overlay');
     ov.style.display = 'flex';
-    
+
     renderMenu('pause', menus.pause, 'pause-overlay');
-    state.scanItems = menus.pause;
     speak("Paused. Continue Game.");
     startAutoScan();
 }
@@ -521,8 +684,8 @@ function openPauseMenu() {
 function showPauseSettings() {
     state.pauseMenuState = 'settings';
     state.pauseIndex = 0;
+    menuScan.setIndex(0);
     renderMenu('settings', menus.pauseSettings, 'pause-overlay');
-    state.scanItems = menus.pauseSettings;
     announceCurrentMenuItem();
     startAutoScan();
 }
@@ -555,19 +718,27 @@ function cycleSetting(key, dir, max) {
     if (key === 'themeIndex') _hasLocalTheme = true;
     if (key === 'highlightColorIndex') _hasLocalHighlightColor = true;
     saveSettings();
-    if (key === 'themeIndex') applyTheme();
+    if (key === 'themeIndex') {
+        themeProvider.setIndex(settings.themeIndex);
+    }
+    if (key === 'highlightColorIndex') {
+        highlightRenderer.setColorIndex(settings.highlightColorIndex);
+    }
+    if (key === 'scanSpeedIndex') {
+        switchInput.setThresholds({ repeatInterval: config.scanSpeeds[settings.scanSpeedIndex].val });
+    }
     refreshCurrentMenu();
 }
 
 function cycleColor(key, dir) {
     const otherKey = key === 'p1ColorIndex' ? 'p2ColorIndex' : 'p1ColorIndex';
     let nextVal = settings[key];
-    
+
     // Loop until we find a color that isn't the opponent's
     do {
         nextVal = (nextVal + dir + playerColors.length) % playerColors.length;
     } while(nextVal === settings[otherKey]);
-    
+
     settings[key] = nextVal;
     saveSettings();
     refreshCurrentMenu();
@@ -576,12 +747,10 @@ function cycleColor(key, dir) {
 function refreshCurrentMenu() {
     if (state.mode === 'menu') {
         renderMenu(state.menuState, menus[state.menuState]);
-        state.scanItems = menus[state.menuState]; // Rebind scan items as DOM objects changed
         announceCurrentMenuItem();
     } else if (state.mode === 'pause') {
         const m = state.pauseMenuState === 'main' ? menus.pause : menus.pauseSettings;
         renderMenu(state.pauseMenuState === 'main' ? 'pause' : 'settings', m, 'pause-overlay');
-        state.scanItems = m;
         announceCurrentMenuItem();
     }
 }
@@ -618,11 +787,11 @@ function initBoard() {
 function renderBoard() {
     const boardEl = document.getElementById('checkers-board');
     boardEl.innerHTML = ''; // Clear
-    
+
     // In scan mode, we need to know what to highlight.
     // If selecting piece, highlight pieces of current turn.
     // If moving, highlight available moves.
-    
+
     const isFlipped = (state.humanSide === -1);
 
     for(let dispR=0; dispR<8; dispR++) {
@@ -638,14 +807,14 @@ function renderBoard() {
             const cell = document.createElement('div');
             cell.className = 'cell ' + ((r+c)%2 === 0 ? 'light' : 'dark');
             cell.id = `cell-${r}-${c}`;
-            
+
             // Mouse Interaction for selecting
             cell.onclick = () => handleCellClick(r, c);
-            
+
             let pieceVal = 0;
             let displayPiece = null;
             let pColorIndex = 0;
-            
+
             if (state.gameType === 'chess') {
                 const cp = chessGame.getPiece(r, c);
                 if (cp) {
@@ -658,10 +827,10 @@ function renderBoard() {
                      pColorIndex = pieceVal > 0 ? settings.p1ColorIndex : settings.p2ColorIndex;
                 }
             }
-            
+
             if ((state.gameType === 'checkers' && pieceVal !== 0) || (state.gameType === 'chess' && displayPiece)) {
                 const piece = document.createElement('div');
-                
+
                 if (state.gameType === 'checkers') {
                     piece.className = 'checker';
                     if (Math.abs(pieceVal) === 2) piece.classList.add('king');
@@ -680,21 +849,21 @@ function renderBoard() {
                     piece.style.height = '100%';
                     piece.style.textShadow = '1px 1px 2px rgba(0,0,0,0.5)';
                 }
-                
+
                 // Visual selected state
                 if (state.selectedPiece && state.selectedPiece.r === r && state.selectedPiece.c === c) {
                     if (state.gameType === 'checkers') piece.classList.add('selected');
                     else piece.style.background = 'rgba(255, 255, 0, 0.4)';
                 }
-                
+
                 cell.appendChild(piece);
             }
-            
+
             // Highlight Moves
             if (state.selectedPiece) {
                 const moveNode = state.availableMoves.find(m => m.r===r && m.c===c);
                 if (moveNode) {
-                     // Special visual for chess captures? 
+                     // Special visual for chess captures?
                      // Just use existing highlight for now.
                     cell.classList.add('possible-move');
                 }
@@ -703,7 +872,7 @@ function renderBoard() {
             boardEl.appendChild(cell);
         }
     }
-    
+
     updateGameHighlights();
 }
 
@@ -713,25 +882,25 @@ function startGame(mode) {
     state.turn = 1; // P1 starts (White always starts)
     state.selectedPiece = null;
     state.availableMoves = [];
-    
+
     // Randomize sides for Chess Single Player
     if (state.gameType === 'chess' && state.gameMode === 'single') {
         state.humanSide = Math.random() < 0.5 ? 1 : -1;
         state.computerSide = -state.humanSide;
-        
+
         let sideText = state.humanSide === 1 ? "White" : "Black";
         speak(`You are playing as ${sideText}`);
         showTurnNotification(`You are ${sideText}`, 3000);
     } else {
         // Default
-        state.humanSide = 1; 
+        state.humanSide = 1;
         state.computerSide = -1;
     }
 
     document.getElementById('menu-container').style.display = 'none';
     document.getElementById('game-board-container').style.display = 'flex';
     // document.getElementById('status-display').innerText = "Player 1's Turn"; // Moved to notification
-    
+
     // Show Pause Button
     const pauseIcon = document.getElementById('pause-button-icon');
     if (pauseIcon) pauseIcon.style.display = 'flex';
@@ -739,15 +908,15 @@ function startGame(mode) {
     initBoard();
     updateGameScanItems();
     renderBoard();
-    
+
     let turnText = "White's Turn";
     if (state.gameType === 'checkers') {
         turnText = "Player 1's Turn";
     }
-    
+
     showTurnNotification(turnText);
     speak("Game Started. " + turnText);
-    
+
     // If Human is Black (-1) and It's White's Turn (1), Computer moves
     if (state.gameType === 'chess' && state.gameMode === 'single' && state.humanSide === -1) {
          setTimeout(computerMove, 1000);
@@ -765,9 +934,9 @@ function restartGame() {
 // We can either scan available pieces OR scan target moves.
 function updateGameScanItems() {
     if (state.mode !== 'game') return;
-    
-    state.scanItems = []; 
-    
+
+    state.scanItems = [];
+
     // Chess Logic
     if (state.gameType === 'chess') {
         if (!state.selectedPiece) {
@@ -775,12 +944,12 @@ function updateGameScanItems() {
             const moves = chessGame.getAllMoves(chessGame.turn);
             const pieces = new Set();
             moves.forEach(m => pieces.add(`${m.from.r},${m.from.c}`));
-            
+
             pieces.forEach(pStr => {
                 const [r, c] = pStr.split(',').map(Number);
                 const piece = chessGame.getPiece(r, c);
                 const name = piece ? getChessPieceName(piece.type) : 'Piece';
-                
+
                 state.scanItems.push({
                     type: 'piece',
                     r, c,
@@ -800,25 +969,26 @@ function updateGameScanItems() {
                     text: `${isCap ? 'Capture ' : 'Move to '}${coordsToText(m.r, m.c)}`
                 });
             });
-            
+
             state.scanItems.push({
                 type: 'cancel',
                 text: "Select different piece"
             });
         }
         state.scanIndexV = 0;
+        gameScan.setIndex(0);
         return;
     }
 
     // Checkers Logic
     const possibleFrom = getPiecesWithMoves(state.turn);
-    
+
     if (!state.selectedPiece) {
         state.scanItems = possibleFrom.map(p => ({
             type: 'piece',
             r: p.r,
             c: p.c,
-            text: `Checker at ${coordsToText(p.r, p.c)}` 
+            text: `Checker at ${coordsToText(p.r, p.c)}`
         }));
     } else {
         const moves = getMovesForPiece(state.selectedPiece.r, state.selectedPiece.c);
@@ -829,13 +999,14 @@ function updateGameScanItems() {
             moveData: m,
             text: `Move to ${coordsToText(m.r, m.c)}`
         }));
-        
+
         state.scanItems.push({
             type: 'cancel',
             text: "Select different piece"
         });
     }
     state.scanIndexV = 0;
+    gameScan.setIndex(0);
 }
 
 function getChessPieceName(type) {
@@ -861,7 +1032,7 @@ function getPiecesWithMoves(playerSign) {
         const moves = getMovesForPiece(p.r, p.c);
         if (moves.some(m => m.isJump)) p.hasJump = true;
     });
-    
+
     const hasAnyJump = pieces.some(p => p.hasJump);
     if (hasAnyJump) {
         return pieces.filter(p => p.hasJump);
@@ -874,7 +1045,7 @@ function getMovesForPiece(r, c) {
     const piece = state.board[r][c];
     const isKing = Math.abs(piece) === 2;
     const playerDir = Math.sign(piece) === 1 ? -1 : 1; // P1 (val 1) moves UP (-r), P2 (val -1) moves DOWN (+r)
-    
+
     const directions = [];
     // Regular moves
     if (isKing || Math.sign(piece) === 1) { // Up
@@ -883,7 +1054,7 @@ function getMovesForPiece(r, c) {
     if (isKing || Math.sign(piece) === -1) { // Down
         directions.push([1, -1], [1, 1]);
     }
-    
+
     // Check simple slides
     directions.forEach(d => {
         const nr = r + d[0];
@@ -899,16 +1070,16 @@ function getMovesForPiece(r, c) {
         const nc = c + d[1];
         const nnr = r + d[0] * 2;
         const nnc = c + d[1] * 2;
-        
+
         if (isValidPos(nr, nc) && isValidPos(nnr, nnc)) {
             const mid = state.board[nr][nc];
             // If mid piece is opponent
             if (mid !== 0 && Math.sign(mid) !== Math.sign(piece)) {
                 if (state.board[nnr][nnc] === 0) {
                     moves.push({
-                        r: nnr, 
-                        c: nnc, 
-                        isJump: true, 
+                        r: nnr,
+                        c: nnc,
+                        isJump: true,
                         captured: {r: nr, c: nc}
                     });
                 }
@@ -921,7 +1092,7 @@ function getMovesForPiece(r, c) {
     // If this piece has jumps, it can ONLY jump.
     const hasJump = moves.some(m => m.isJump);
     if (hasJump) return moves.filter(m => m.isJump);
-    
+
     return moves;
 }
 
@@ -931,12 +1102,12 @@ function isValidPos(r, c) {
 
 function handleCellClick(r, c) {
     if (state.mode !== 'game') return;
-    
+
     if (state.gameType === 'chess') {
         handleChessClick(r, c);
         return;
     }
-    
+
     // 1. Is it a piece we can select?
     if (state.board[r][c] !== 0 && Math.sign(state.board[r][c]) === state.turn) {
         // Check if it's in the valid pieces list (forced jumps)
@@ -957,7 +1128,7 @@ function handleCellClick(r, c) {
              return;
         }
     }
-    
+
     // 2. Is it a valid move destination?
     if (state.selectedPiece) {
         const move = state.availableMoves.find(m => m.r === r && m.c === c);
@@ -972,7 +1143,7 @@ function handleChessClick(r, c) {
     // Chess selection logic
     const piece = chessGame.getPiece(r, c);
     const turnColor = state.turn === 1 ? 'w' : 'b';
-    
+
     // Safety check: Don't allow clicking if it's computer turn (and we are single player)
     if (state.gameMode === 'single' && state.turn === state.computerSide) return;
 
@@ -984,7 +1155,7 @@ function handleChessClick(r, c) {
             let targetC = -1;
             if (c === 7) targetC = 6; // Kingside
             if (c === 0) targetC = 2; // Queenside
-            
+
             if (targetC !== -1) {
                 const castleMove = state.availableMoves.find(m => m.r === r && m.c === targetC && m.moveData.isCastle);
                 if (castleMove) {
@@ -1001,7 +1172,7 @@ function handleChessClick(r, c) {
         selectPiece(r, c);
         return;
     }
-    
+
     // Execute Move if target
     if (state.selectedPiece) {
         // Target empty or opponent
@@ -1014,15 +1185,15 @@ function handleChessClick(r, c) {
 
 function selectPiece(r, c) {
     state.selectedPiece = {r, c};
-    
+
     if (state.gameType === 'chess') {
         // Chess Logic
         // Use getValidMoves instead of getMovesForPiece to ensure King safety
         const validMoves = chessGame.getValidMoves(r, c);
-        
+
         // Map to UI format
         state.availableMoves = validMoves.map(m => ({
-            r: m.to.r, 
+            r: m.to.r,
             c: m.to.c,
             moveData: m
         }));
@@ -1033,7 +1204,7 @@ function selectPiece(r, c) {
 
     updateGameScanItems(); // Now scanning moves
     renderBoard();
-    
+
     // Announce
     speak(`Selected ${coordsToText(r,c)}. ${state.availableMoves.length} moves available.`);
     playSound('select');
@@ -1043,12 +1214,12 @@ function executeMove(move) {
     if (state.gameType === 'chess') {
         const moveData = move.moveData;
         const captured = moveData.captured;
-        
+
         chessGame.makeMove(moveData);
-        
+
         if (captured) playSound('scan'); // Capture sound
         else playSound('move');
-        
+
         // Announcements
         if (state.gameType === 'chess') {
             if (moveData.isCastle) {
@@ -1059,13 +1230,13 @@ function executeMove(move) {
                 speak("En Passant");
             }
         }
-        
+
         // Promotion Sound?
         if (moveData.promotion) {
              playSound('king');
              speak("Promoted!");
         }
-        
+
         endTurn();
         return;
     }
@@ -1073,17 +1244,17 @@ function executeMove(move) {
     // --- Checkers Logic ---
     const {r, c} = state.selectedPiece;
     const pieceVal = state.board[r][c];
-    
+
     // Move piece
     state.board[r][c] = 0;
     state.board[move.r][move.c] = pieceVal;
-    
+
     // Capture
     if (move.isJump && move.captured) {
         state.board[move.captured.r][move.captured.c] = 0;
         playSound('scan'); // Capture sound
     }
-    
+
     // King Promotion
     let promoted = false;
     // Check if not already a king (absolute value 1 means Man, 2 means King)
@@ -1100,24 +1271,24 @@ function executeMove(move) {
             speak("King Me!");
         }
     }
-    
-    // Multi-jump logic? 
+
+    // Multi-jump logic?
     // If it was a jump, check if more jumps are available from new pos.
     let turnEnds = true;
     if (move.isJump && !promoted) {
         // Look for subsequent jumps from move.r, move.c
         const subsequentMoves = getMovesForPiece(move.r, move.c);
-        
+
         if (subsequentMoves.some(m => m.isJump)) {
              turnEnds = false;
              // Continue turn
              state.selectedPiece = {r: move.r, c: move.c};
              state.availableMoves = subsequentMoves; // filter to jumps (logic inside getMoves handles this if jumps exist)
              state.board[move.r][move.c] = pieceVal; // Ensure board is updated
-             
+
              updateGameScanItems();
              renderBoard();
-             
+
              // If Computer Turn, execute next jump immediately
              if (state.gameMode === 'single' && state.turn === -1) {
                  speak("Computer jumping again.");
@@ -1132,7 +1303,7 @@ function executeMove(move) {
              }
         }
     }
-    
+
     if (turnEnds) {
         endTurn();
     }
@@ -1151,16 +1322,17 @@ function endTurn() {
 
     state.selectedPiece = null;
     state.availableMoves = [];
-    state.scanItems = []; 
+    state.scanItems = [];
     state.scanIndexV = -1;
-    
+    gameScan.setIndex(-1);
+
     // Clear highlights
     document.querySelectorAll('.cell').forEach(c => {
         c.classList.remove('highlight-outline', 'highlight-full');
         c.style.boxShadow = '';
         c.style.backgroundColor = '';
     });
-    
+
     // Check Win/Loss
     if (state.gameType === 'chess') {
         // Check for Mate
@@ -1187,7 +1359,7 @@ function endTurn() {
         const p2Pieces = countPieces(-1);
         const p1Moves = getPiecesWithMoves(1).length;
         const p2Moves = getPiecesWithMoves(-1).length;
-        
+
         if (p1Pieces === 0 || p1Moves === 0) {
             const winner = (state.gameMode === 'single') ? "Computer" : "Player 2";
             gameOver(`${winner} Wins!`);
@@ -1198,14 +1370,15 @@ function endTurn() {
             return;
         }
     }
-    
+
     renderBoard();
-    
+
     // Delay for next turn setup
     setTimeout(() => {
         updateGameScanItems();
-        state.scanIndexV = -1; 
-        
+        state.scanIndexV = -1;
+        gameScan.setIndex(-1);
+
         let playerText = state.turn === 1 ? "Player 1" : "Player 2";
         if (state.gameType === 'chess') {
             playerText = state.turn === 1 ? "White" : "Black";
@@ -1220,18 +1393,18 @@ function endTurn() {
         }
 
         showTurnNotification(`${playerText}'s Turn`);
-        
+
         // Check Computer Turn
         let isComputerTurn = false;
         if (state.gameMode === 'single') {
              if (state.gameType === 'chess' && state.turn === state.computerSide) isComputerTurn = true;
              else if (state.gameType === 'checkers' && state.turn === -1) isComputerTurn = true;
         }
-        
+
         if (isComputerTurn) {
             speak("Computer's Turn.");
             // Short delay for computer
-            setTimeout(computerMove, 500); 
+            setTimeout(computerMove, 500);
         } else {
             speak(`${playerText}'s Turn.`);
             startAutoScan();
@@ -1256,14 +1429,14 @@ function computerMove() {
 
     // Checkers AI
     const pieces = getPiecesWithMoves(-1);
-    if (pieces.length === 0) return; 
-    
+    if (pieces.length === 0) return;
+
     const piece = pieces[Math.floor(Math.random() * pieces.length)];
     const moves = getMovesForPiece(piece.r, piece.c);
     const move = moves[Math.floor(Math.random() * moves.length)];
-    
+
     state.selectedPiece = piece;
-    state.availableMoves = moves; 
+    state.availableMoves = moves;
     executeMove(move);
 }
 
@@ -1276,10 +1449,10 @@ function countPieces(sign) {
 }
 
 function gameOver(msg) {
-    state.mode = 'gameover'; 
+    state.mode = 'gameover';
     speak("Game Over. " + msg);
     showTurnNotification(msg, 5000); // Show for longer
-    
+
     // Instead of opening pause menu, wait and go to main menu
     setTimeout(() => {
         speak("Returning to Main Menu");
@@ -1296,147 +1469,6 @@ function coordsToText(r, c) {
     return `${cols[c]} ${row}`;
 }
 
-// --- Input Handling & Scanning ---
-
-function setupInput() {
-    document.addEventListener('keydown', handleKeyDown);
-    document.addEventListener('keyup', handleKeyUp);
-}
-
-function handleKeyDown(e) {
-    if (e.repeat) return;
-    
-    if (e.code === 'Space') {
-        state.input.spaceHeld = true;
-        state.input.spaceTime = Date.now();
-        state.timers.space = setTimeout(() => {
-            // Long Press Triggered (> 3s)
-            startBackwardScanLoop(); // Start looping backward
-        }, config.longPress);
-    } 
-    else if (e.code === 'Enter') {
-        state.input.enterHeld = true;
-        state.input.enterTime = Date.now();
-        state.timers.enter = setTimeout(() => {
-            // Long Press Enter (> 5s)
-            state.timers.enter = null;
-            if (state.mode === 'game') openPauseMenu();
-        }, config.enterLongPress);
-    }
-}
-
-function handleKeyUp(e) {
-    if (e.code === 'Space') {
-        clearTimeout(state.timers.space);
-        clearInterval(state.timers.spaceRepeat);
-        
-        if (state.input.spaceHeld) { // If scan was happening
-            const duration = Date.now() - state.input.spaceTime;
-            if (duration < config.longPress) {
-                // Short Press: Scan Forward
-                scanNext();
-            }
-            // Long press release stops the backward loop (already cleared interval)
-        }
-        state.input.spaceHeld = false;
-    }
-    else if (e.code === 'Enter') {
-        if (state.timers.enter) clearTimeout(state.timers.enter);
-        
-        if (state.input.enterHeld) {
-            const duration = Date.now() - state.input.enterTime;
-            if (duration < config.enterLongPress) {
-                // Short Press: Select
-                selectCurrentItem();
-            }
-        }
-        state.input.enterHeld = false;
-    }
-}
-
-function scanNext() {
-    playSound('scan');
-    // What are we scanning?
-    if (state.mode === 'game') {
-        // Scanning game items
-        if (state.scanItems.length === 0) return;
-        state.scanIndexV = (state.scanIndexV + 1) % state.scanItems.length;
-        updateGameHighlights();
-        announceCurrentGameItem();
-    } else {
-        // Scanning Menus
-        const menuLen = state.scanItems.length;
-        if (state.mode === 'menu') {
-            state.menuIndex = (state.menuIndex + 1) % menuLen;
-        } else if (state.mode === 'pause') {
-            state.pauseIndex = (state.pauseIndex + 1) % menuLen;
-        }
-        updateHighlights();
-        announceCurrentMenuItem();
-    }
-    resetAutoScan();
-}
-
-function scanPrev() {
-    playSound('scan');
-     if (state.mode === 'game') {
-        if (state.scanItems.length === 0) return;
-        state.scanIndexV = (state.scanIndexV - 1 + state.scanItems.length) % state.scanItems.length;
-        updateGameHighlights();
-        announceCurrentGameItem();
-    } else {
-        const menuLen = state.scanItems.length;
-        if (state.mode === 'menu') {
-            state.menuIndex = (state.menuIndex - 1 + menuLen) % menuLen;
-        } else if (state.mode === 'pause') {
-            state.pauseIndex = (state.pauseIndex - 1 + menuLen) % menuLen;
-        }
-        updateHighlights();
-        announceCurrentMenuItem();
-    }
-}
-
-function startBackwardScanLoop() {
-    scanPrev(); // Immediate first step
-    const interval = config.scanSpeeds[settings.scanSpeedIndex].val;
-    
-    state.timers.spaceRepeat = setInterval(() => {
-        scanPrev();
-    }, interval);
-}
-
-function selectCurrentItem() {
-    if (state.mode === 'game') {
-        if (state.scanItems.length === 0) return;
-        const item = state.scanItems[state.scanIndexV];
-        if (item.type === 'piece') {
-            handleCellClick(item.r, item.c);
-        } else if (item.type === 'move') {
-            executeMove(item.moveData);
-        } else if (item.type === 'cancel') {
-             // Deselect
-             state.selectedPiece = null;
-             state.availableMoves = [];
-             updateGameScanItems();
-             renderBoard();
-             speak("Selection Cancelled.");
-        }
-    } else {
-        // Menu Selection
-        let item;
-        if (state.mode === 'menu') item = menus[state.menuState][state.menuIndex];
-        else if (state.mode === 'pause') {
-            const m = state.pauseMenuState === 'main' ? menus.pause : menus.pauseSettings;
-            item = m[state.pauseIndex];
-        }
-        
-        if (item && item.action) {
-            playSound('select');
-            item.action();
-        }
-    }
-}
-
 // --- Highlighting UI ---
 
 function updateHighlights() {
@@ -1449,10 +1481,10 @@ function updateHighlights() {
              b.style.backgroundColor = 'rgba(255, 255, 255, 0.9)';
              b.style.color = '#333';
         });
-        
+
         let container = state.mode === 'menu' ? 'menu-container' : 'pause-overlay';
         let idx = state.mode === 'menu' ? state.menuIndex : state.pauseIndex;
-        
+
         const btn = document.getElementById(`btn-${container}-${idx}`);
         // Note: For settings menu inside pause, ID might be tricky.
         // Let's rely on child index for robustness in simple menus.
@@ -1474,7 +1506,7 @@ function highlightButton(btn) {
     btn.classList.add('highlight');
     // Color logic
     const uiColor = highlightColors[settings.highlightColorIndex];
-    
+
     // Apply Highlight Style (Outline or Full)
     if (settings.highlightStyle === 'full') {
         btn.style.backgroundColor = uiColor;
@@ -1498,10 +1530,10 @@ function updateGameHighlights() {
         c.style.boxShadow = ''; // Clear inline box shadow
         c.style.backgroundColor = ''; // Clear inline background color from full highlight
     });
-    
+
     if (state.scanItems.length === 0) return;
     const item = state.scanItems[state.scanIndexV];
-    
+
     let targetR, targetC;
 
     if (item.type === 'cancel') {
@@ -1522,13 +1554,13 @@ function updateGameHighlights() {
         if(cell) {
              cell.classList.add(settings.highlightStyle === 'full' ? 'highlight-full' : 'highlight-outline');
              let color = highlightColors[settings.highlightColorIndex];
-             
+
              // Make cancellation distinct (e.g. Red if normally yellow, or just same color)?
              // User just said "it should highlight the checker". Same highlight is probably fine.
              // But if we want it "more apparent", maybe pulsating? (dealt with in CSS)
-             
-             cell.style.setProperty('--highlight-color', color); 
-             
+
+             cell.style.setProperty('--highlight-color', color);
+
              if (settings.highlightStyle === 'full') {
                  cell.style.backgroundColor = color;
              } else {
@@ -1558,7 +1590,7 @@ function announceCurrentMenuItem() {
          const m = state.pauseMenuState === 'main' ? menus.pause : menus.pauseSettings;
          item = m[state.pauseIndex];
     }
-    
+
     if (item) {
         let t = typeof item.text === 'function' ? item.text() : item.text;
         // Strip HTML tag for clean TTS (removes swatch span etc)
@@ -1576,30 +1608,43 @@ function announceCurrentGameItem() {
 }
 
 function startAutoScan() {
-    resetAutoScan(); 
+    resetAutoScan();
 }
 
 function resetAutoScan() {
-    if (state.timers.autoScan) clearInterval(state.timers.autoScan);
-    
+    if (autoScanTimer) clearInterval(autoScanTimer);
+    autoScanTimer = null;
+
     const isAuto = (typeof window.NarbeScanManager !== 'undefined') ? window.NarbeScanManager.getSettings().autoScan : settings.autoScan;
 
     if (isAuto) {
          const interval = (typeof window.NarbeScanManager !== 'undefined') ? window.NarbeScanManager.getScanInterval() : config.scanSpeeds[settings.scanSpeedIndex].val;
          if (interval > 0) {
-             state.timers.autoScan = setInterval(() => {
-                scanNext();
+             autoScanTimer = setInterval(() => {
+                // Skip if Space is held (backward scanning)
+                if (switchInput && switchInput.isSpaceHeld()) return;
+
+                playSound('scan');
+                if (state.mode === 'game') {
+                    gameScan.forward();
+                } else if (state.mode === 'menu' || state.mode === 'pause') {
+                    menuScan.forward();
+                }
              }, interval);
          }
     }
 }
 
 function applyTheme() {
-    const theme = themes[settings.themeIndex];
-    if (theme) { // Safety check
-        document.body.style.background = theme.bg;
-        document.body.style.backgroundSize = "cover";
-        document.body.style.backgroundAttachment = "fixed";
+    if (themeProvider) {
+        themeProvider.apply();
+    } else {
+        const theme = themes[settings.themeIndex];
+        if (theme) {
+            document.body.style.background = theme.bg;
+            document.body.style.backgroundSize = "cover";
+            document.body.style.backgroundAttachment = "fixed";
+        }
     }
 }
 
@@ -1608,10 +1653,10 @@ function showTurnNotification(text, duration = 1500) {
     if (!el) return;
     el.innerText = text;
     el.classList.add('visible');
-    
+
     // Clear existing timeout if any to prevent hiding early
     if (state.timers.status) clearTimeout(state.timers.status);
-    
+
     state.timers.status = setTimeout(() => {
         el.classList.remove('visible');
     }, duration);
@@ -1625,4 +1670,3 @@ function toggleGameType() {
     refreshCurrentMenu();
     speak(`Game changed to ${state.gameType}`);
 }
-
